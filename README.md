@@ -1,196 +1,431 @@
-# ACOJ Worker — 判题服务节点
+# ACOJ Worker
 
 ![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116%2B-009688?logo=fastapi&logoColor=white)
-![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Supported-4169E1?logo=postgresql&logoColor=white)
-![Redis](https://img.shields.io/badge/Redis-6.2%2B-DC382D?logo=redis&logoColor=white)
+![Celery](https://img.shields.io/badge/Celery-5.x-37814A)
 ![RabbitMQ](https://img.shields.io/badge/RabbitMQ-Supported-FF6600?logo=rabbitmq&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green)
 
-ACOJ Worker 是 ACOJ 在线判题系统的**判题服务节点**，负责接收判题任务、在沙箱中执行代码评测并返回结果。支持多节点部署，通过 RabbitMQ + Celery 进行任务调度。
+`acoj-worker` 是 ACOJ 的判题 worker 服务。它通过 RabbitMQ/Celery 消费 `judge` 队列中的判题任务，调用 `acoj-sandbox` 完成编译、运行、资源限制和计量，并通过 Celery task result 返回判题结果。判题入口是 Celery task `judge.execute`。
 
-沙箱执行基于 [acoj-sandbox](https://github.com/jiangbyte/acoj-sandbox) — 一个带 seccomp、cgroup、namespace 隔离的 C++ 原生沙箱。
+## 架构
 
-技术底座基于 [hei-fastapi](https://github.com/jiangbyte/hei-fastapi) 全栈脚手架。
+```text
+API / test client
+  -> RabbitMQ judge queue
+  -> Celery task judge.execute
+  -> app.modules.judge.orchestrator.judge()
+  -> judge mode: STANDARD / SPECIAL_JUDGE / INTERACTIVE
+  -> SandboxClient
+  -> acoj-sandbox worker pool
+  -> acosandbox C++ binary
+```
 
-## 功能概览
+核心模块：
 
-- **判题执行**：在沙箱中编译运行用户代码，对时间、内存、输出进行限制和度量。
-- **多语言支持**：通过 `acoj-sandbox` 的语言配置支持 C/C++、Python、Java 等。
-- **多节点调度**：通过 RabbitMQ + Celery 分发判题任务到多个 Worker 节点。
-- **异步任务**：Celery worker 消费判题任务，支持定时任务调度。
-- **可观测性**：结构化日志、Prometheus metrics、OpenTelemetry tracing。
+- `app/modules/judge/tasks.py`：Celery task `judge.execute`。
+- `app/modules/judge/orchestrator.py`：按 `judge_mode` 分发到不同判题模式。
+- `app/modules/judge/modes/__init__.py`：`MODE_REGISTRY` 注册 STANDARD/SPECIAL_JUDGE/INTERACTIVE。
+- `app/modules/judge/modes/base.py`：`BaseJudgeMode` 抽象基类。
+- `app/modules/judge/modes/standard.py`：STANDARD，支持 ACM/OI/IOI 计分。
+- `app/modules/judge/modes/spj.py`：SPECIAL_JUDGE，checker 编译一次、多 case 复用。
+- `app/modules/judge/modes/interactive.py`：INTERACTIVE，用户程序和 interactor 通过 FIFO 通信。
+- `app/modules/judge/case_builder.py`：构造 JudgeCase，提取期望输出文本。
+- `app/modules/judge/checker.py`：输出比对（忽略行尾空白）。
+- `app/modules/judge/data_loader.py`：从本地/远端存储加载测试数据。
+- `app/modules/judge/file_cache.py`：判题测试数据文件缓存（避免重复远端下载）。
+- `app/modules/judge/language_config.py`：从 payload 生成 `acoj_sandbox.LanguagesConfig`。
+- `app/modules/judge/pool_metrics.py`：sandbox worker pool 指标采集。
+- `app/modules/judge/result_mapper.py`：映射 sandbox 结果到 OJ 状态码，聚合总结果。
+- `app/modules/judge/sandbox_config.py`：从配置生成 sandbox isolation/cgroup/client。
+- `app/modules/judge/schemas.py`：判题输入/输出 Pydantic 模型。
+- `app/modules/judge/scoring.py`：IOI 子任务计分、依赖关系解析、错误评语。
+- `app/modules/judge/module.py`：ModuleSpec 声明（无路由、无模型、纯任务）。
+- `app/platform/tasks/celery_app.py`：Celery app、队列、prefetch、RedBeat、result backend 配置。
+- `app/platform/tasks/redbeat_scheduler.py`：RedBeat 定时任务同步。
+- `app/platform/tasks/base.py`：基类 task。
+
+## 功能
+
+- STANDARD 判题：ACM 首错跳过、OI 按点计分、IOI batch/subtask 聚合。
+- SPECIAL_JUDGE：用户程序和 checker 分别编译，checker per-case 复用。
+- INTERACTIVE：用户程序与 interactor 双向 FIFO 通信，异常路径快速释放 FIFO，避免等待十几秒。
+- 多语言：从任务 payload 的 `language` 字段生成 `acoj_sandbox.LanguagesConfig`。
+- 真实队列：RabbitMQ + Celery，任务默认进入 `judge` 队列。
+- sandbox worker pool：进程级复用 `acosandbox worker`，降低 subprocess 启动成本。
+- 编译缓存：由 `acoj-sandbox` 提供 content-addressed cache，worker 默认开启。
+- 隔离能力：可配置 namespaces、network/ipc/uts/mount isolation、cgroup v1/v2、rootfs。
+- 可观测性：Celery 进程状态、sandbox pool metrics、日志、Prometheus/OpenTelemetry 基础设施。
 
 ## 运行要求
 
 - Python 3.11+
-- PostgreSQL
-- Redis
 - RabbitMQ
-- **acoj-sandbox**：沙箱执行引擎（需要 C++20 编译器、make、libseccomp-dev）
+- Redis（Celery beat lock、缓存等基础设施使用）
+- PostgreSQL（API/业务模块需要）
+- `acoj-sandbox` Python 包与 C++ binary
+- 判题语言工具链，例如 `g++`、`gcc`、`python3`、`openjdk-17-jdk`
+- 生产隔离建议 Linux + Docker/root 权限 + cgroup v2 + seccomp
+
+Debian/Ubuntu 基础依赖示例：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y build-essential pkg-config libseccomp-dev python3 python3-pip
+```
 
 ## 快速启动
 
-```bash
-# 安装 acoj-sandbox（需要在本地编译 C++ 二进制）
-pip install /path/to/acoj-sandbox
+安装 sandbox：
 
-# 安装 Worker
-pip install -e ".[postgres]"
-cp .env.example .env
-vim .env
-python scripts/dev.py
+```bash
+cd /path/to/acoj-sandbox
+make clean all
+python -m pip install .
 ```
 
-`.env.example` 是带注释的配置模板，复制后需要按本机环境取消注释并填写 `DB__URL`、`REDIS__URL`、`CELERY__BROKER_URL` 等关键项。
-
-默认后端地址为 `http://127.0.0.1:8000`，接口文档为 `/docs`。
-
-## 常用命令
+安装 worker：
 
 ```bash
-python scripts/dev.py          # 启动开发服务器
-python scripts/test.py         # 运行测试
-python scripts/lint.py         # 代码检查
-python scripts/migrate.py      # 执行数据库迁移
-python scripts/makemigration.py "describe change"   # 生成迁移
+cd /path/to/acoj-worker
+python -m pip install -e ".[postgres]"
+cp .env.example .env
+```
+
+编辑 `.env`，至少配置：
+
+```env
+APP__DEBUG=true
+DB__URL=postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/hei_fastapi
+REDIS__URL=redis://127.0.0.1:6379/0
+CELERY__BROKER_URL=amqp://admin:123456@127.0.0.1:5672//
+```
+
+开发模式下可以直接启动 API（使用 `entrypoint.sh` 同时启动 API + Worker + Beat）：
+
+```bash
+./entrypoint.sh
+```
+
+也可以单独启动各部分：
+
+```bash
+gunicorn app.main:app -c gunicorn.conf.py           # 仅 API
+celery -A app.platform.tasks.celery_app:celery_app worker \
+  -Q judge \
+  --pool threads \
+  --concurrency 8 \
+  --without-mingle \
+  --without-gossip \
+  --loglevel INFO
+```
+
+RedBeat 定时任务调度器：
+
+```bash
+celery -A app.platform.tasks.celery_app:celery_app beat \
+  --loglevel INFO \
+  --scheduler redbeat.RedBeatScheduler
 ```
 
 ## 配置
 
-后端配置使用 `pydantic-settings`，支持嵌套环境变量，分隔符为 `__`。
+配置使用 `pydantic-settings`，环境变量嵌套分隔符为 `__`。
 
-常用配置项：
+### Celery
 
-- `APP__HOST` / `APP__PORT`：监听地址和端口。
-- `APP__DEBUG`：开发模式，开启时 Uvicorn reload 生效。
-- `APP__WORKERS`：API worker 数，`0` 表示按 CPU 自动计算。
-- `DB__URL`：数据库连接地址（PostgreSQL asyncpg）。
-- `REDIS__URL`：Redis 地址，用于会话和缓存。
-- `CELERY__BROKER_URL`：RabbitMQ broker 地址。
-- `CELERY__AUTO_START_ENABLED`：是否由 API 进程内嵌自启动 Celery worker/beat。
-- `MQ__ENABLED`：是否启用 RabbitMQ consumer。
-- `STORAGE__PROVIDER`：文件存储方式，可选 `local`、`minio`、`s3`、`oss`。
-- `OBSERVABILITY__ENABLED`：可观测性总开关。
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `CELERY__BROKER_URL` | `amqp://guest:guest@127.0.0.1:5672//` | RabbitMQ broker |
+| `CELERY__WORKER_LOG_LEVEL` | `INFO` | Celery worker 日志级别 |
+| `CELERY__BEAT_LOG_LEVEL` | `INFO` | Celery beat 日志级别 |
+| `CELERY__WORKER_POOL` | `threads` | worker pool 类型 |
+| `CELERY__WORKER_CONCURRENCY` | `4` | 单 worker 并行 task 数 |
+| `CELERY__WORKER_PREFETCH_MULTIPLIER` | `4` | 每个执行槽预取任务数 |
+| `CELERY__WORKER_REMOTE_CONTROL_ENABLED` | `false` | 是否启用 Celery remote control |
+| `CELERY__WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS` | `true` | 连接丢失时是否取消长时间运行的任务 |
 
-本地开发示例：
+生产建议：
 
-```env
-APP__DEBUG=true
-APP__WORKERS=1
-REDIS__URL=redis://127.0.0.1:6379/0
-CELERY__AUTO_START_ENABLED=true
-CELERY__BROKER_URL=amqp://admin:123456@127.0.0.1:5672//
-STORAGE__PROVIDER=local
-OBSERVABILITY__ENABLED=false
+- 长任务/TLE 多：`WORKER_PREFETCH_MULTIPLIER=1`。
+- 短任务吞吐优先：可以调到 `2-4`，需要监控队列公平性。
+- 多 worker 容器水平扩展通常比单容器无限提高 concurrency 更稳。
+
+Celery result backend 使用 Redis（由 `REDIS__URL` 提供），通过 RedBeat 管理定时任务。
+
+### sandbox pool
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `CELERY__SANDBOX_WORKER_POOL_SIZE` | `16` | 进程级 sandbox worker 池大小 |
+| `CELERY__SANDBOX_STANDARD_PARALLELISM` | `4` | STANDARD 单任务内多 case 并行度 |
+| `CELERY__SANDBOX_BORROW_TIMEOUT_SECONDS` | `0.25` | 满池时每次等待 slice |
+| `CELERY__SANDBOX_MAX_QUEUE_WAIT_SECONDS` | `0.0` | sandbox 借用总等待预算，`0` 表示不设总上限 |
+| `CELERY__SANDBOX_ALLOW_EMERGENCY_WORKER` | `false` | 满池时是否创建临时 worker |
+| `CELERY__SANDBOX_REQUEST_TIMEOUT_SECONDS` | `120.0` | 单次 sandbox worker 请求超时 |
+| `CELERY__SANDBOX_QUEUE_WAIT_WARN_SECONDS` | `0.5` | 借用等待超过该值时记录 warning |
+| `CELERY__SANDBOX_HEALTH_CHECK_TIMEOUT_SECONDS` | `1.0` | 健康检查超时 |
+
+容量建议：
+
+```text
+SANDBOX_WORKER_POOL_SIZE >= WORKER_CONCURRENCY * SANDBOX_STANDARD_PARALLELISM
 ```
 
+例如 `concurrency=8`、`standard_parallelism=4` 时，pool size 建议至少 `32`。
+
+### 编译缓存
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `CELERY__SANDBOX_COMPILATION_CACHE_ENABLED` | `true` | 是否启用 sandbox 编译缓存 |
+| `CELERY__SANDBOX_COMPILATION_CACHE_DIR` | `/tmp/acoj-ccache` | 缓存目录 |
+| `CELERY__SANDBOX_COMPILATION_CACHE_MAX_MB` | `512` | LRU 容量上限 |
+| `CELERY__SANDBOX_COMPILATION_CACHE_TTL_SECONDS` | `3600` | TTL |
+
+缓存由 `acoj-sandbox` 管理。编译缓存只恢复目标编译产物，SPJ/INTERACTIVE 的共享 workspace 不会被缓存中的其他文件覆盖。
+
+结果缓存：使用 Redis RPC result backend（通过 `REDIS__URL`），默认 polling 间隔 100ms 降低 `AsyncResult.get()` 延迟。
+
+### isolation / cgroup
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `CELERY__SANDBOX_ENABLE_NAMESPACES` | `false` | 是否启用 namespaces |
+| `CELERY__SANDBOX_ROOTFS_PATH` | 空 | rootfs 路径 |
+| `CELERY__SANDBOX_ISOLATE_NETWORK` | `true` | 网络 namespace |
+| `CELERY__SANDBOX_ISOLATE_IPC` | `true` | IPC namespace |
+| `CELERY__SANDBOX_ISOLATE_UTS` | `true` | UTS namespace |
+| `CELERY__SANDBOX_PRIVATE_MOUNTS` | `true` | private mount propagation |
+| `CELERY__SANDBOX_USE_PIVOT_ROOT` | `true` | 使用 pivot_root |
+| `CELERY__SANDBOX_BIND_WORKSPACE` | `true` | rootfs 模式下绑定 workspace |
+| `CELERY__SANDBOX_ENABLE_CGROUP` | `false` | 是否启用 cgroup |
+| `CELERY__SANDBOX_CGROUP_VERSION` | `auto` | `auto` / `v1` / `v2` |
+| `CELERY__SANDBOX_CGROUP_BASE_PATH` | `/sys/fs/cgroup/acoj-sandbox` | cgroup base path |
+| `CELERY__SANDBOX_CGROUP_V1_MEMORY_BASE_PATH` | 空 | v1 显式 memory controller 路径 |
+| `CELERY__SANDBOX_CGROUP_V1_PIDS_BASE_PATH` | 空 | v1 显式 pids controller 路径 |
+
+生产建议开启 namespaces 和 cgroup。Docker 中通常需要 `--privileged --cgroupns=host` 或经验证的最小 capability 集合。
+如果生产要收敛权限，需要逐项验证 capability、mount、cgroup 写权限和 namespace 创建能力。
+
+### judge file cache
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `STORAGE__CACHE_ENABLED` | `true` | 是否启用判题测试数据文件缓存 |
+| `STORAGE__CACHE_DIR` | `storage/judge-cache` | 缓存目录 |
+| `STORAGE__CACHE_MAX_MB` | `512` | LRU 容量上限 |
+| `STORAGE__CACHE_TTL_SECONDS` | `604800`（7天） | TTL |
+
+## 判题任务 payload
+
+最小 STANDARD payload：
+
+```json
+{
+  "submission_id": "sub-1",
+  "judge_mode": "STANDARD",
+  "problem": {
+    "code": "demo",
+    "time_limit_ms": 2000,
+    "memory_limit_kb": 262144,
+    "points": 100,
+    "partial": false
+  },
+  "language": {
+    "key": "cpp17",
+    "name": "C++17",
+    "extension": ".cpp",
+    "compile_command": "/usr/bin/g++ -std=c++17 -O2 -o {exe} {source}",
+    "run_command": "{exe}"
+  },
+  "source": "#include <iostream>\nint main(){std::cout<<\"ok\\n\";}",
+  "test_cases": [
+    {
+      "case_no": 1,
+      "points": 100,
+      "time_limit_ms": 2000,
+      "memory_limit_kb": 262144,
+      "input_inline": "",
+      "output_inline": "ok\n"
+    }
+  ]
+}
+```
+
+发送任务：
+
+```python
+from app.platform.tasks.celery_app import celery_app
+
+async_result = celery_app.send_task("judge.execute", args=[payload], queue="judge")
+result = async_result.get(timeout=30)
+```
+
+返回结果形态：
+
+```json
+{
+  "submission_id": "sub-1",
+  "status": "COMPLETED",
+  "result": "AC",
+  "score": 100.0,
+  "time_ms": 5,
+  "memory_kb": 3456,
+  "compile_output": "",
+  "compile_error": false,
+  "cases": [],
+  "error": null,
+  "wall_time_ms": 120
+}
+```
+
+## 测试
+
+基础单元测试：
+
+```bash
+PYTHONPATH=/path/to/acoj-sandbox/python:/path/to/acoj-worker \
+python -m pytest tests/unit -q
+```
+
+sandbox 基础集成：
+
+```bash
+PYTHONPATH=/path/to/acoj-sandbox/python:/path/to/acoj-worker \
+python -m pytest tests/test_sandbox.py -q
+```
+
+真实 Celery/RabbitMQ 集成测试需要先启动 RabbitMQ 和 Celery worker，然后运行：
+
+```bash
+PYTHONPATH=/path/to/acoj-sandbox/python:/path/to/acoj-worker \
+python tests/test_all_judge_modes.py
+```
+
+测试矩阵：
+
+| 文件 | 覆盖内容 | 依赖 |
+|---|---|---|
+| `tests/test_all_judge_modes.py` | STANDARD/SPJ/INTERACTIVE 全模式、全状态 | Worker + RabbitMQ |
+| `tests/test_interactive.py` | INTERACTIVE AC/WA/RE 专项 | Worker + RabbitMQ |
+| `tests/test_celery_pool.py` | pool 复用、并发、混合模式、Python | Worker + RabbitMQ |
+| `tests/test_concurrent.py` | 基础并发和 TLE 隔离 | Worker + RabbitMQ |
+| `tests/test_concurrent_extended.py` | burst 与混合并发扩展 | Worker + RabbitMQ |
+| `tests/test_boundary.py` | 重复 ID、无效 payload、大源码 | Worker + RabbitMQ |
+| `tests/test_boundary_extended.py` | Unicode、空源码、200 case、极端 limit | Worker + RabbitMQ |
+| `tests/test_stability.py` | 多轮 AC/TLE 稳定性 | Worker + RabbitMQ |
+| `tests/test_stress_extended.py` | 3 分钟脉冲、存活验证、混合 100 | Worker + RabbitMQ |
+| `tests/unit/*` | case builder、checker、file cache、language config、pipeline、result mapper、sandbox config、schemas、scoring | pytest |
+
+生产路径必须额外在目标 Docker/宿主环境执行 `acoj-sandbox` root integration，详见 [worker/sandbox 生产开发与部署指南](docs/worker-sandbox-production-validation.md)。
+
 ## Docker 部署
+
+构建：
 
 ```bash
 docker build -t acoj-worker .
 ```
 
-Worker 节点按角色拆分：
+镜像特点：
 
-- **API**：接收判题请求，可多副本部署。
-- **Worker**：消费 RabbitMQ 队列中的判题任务，可多副本部署。
-- **Beat**：定时任务调度，必须单副本。
+- 使用 `tini` 作为 init 进程，确保信号转发和僵尸进程回收。
+- 入口为 `entrypoint.sh`（gunicorn + Celery worker + Celery beat 单容器模式）。
+- Celery worker 默认消费 `judge` 队列。
+- Gunicorn 使用 `UvicornWorker` 运行 ASGI 应用。
+- 默认 `APP__DEBUG=false`、`APP__WORKERS=0`（按 CPU 自动计算）。
+- Celery result backend 通过 Redis 提供。
 
-API 容器：
+API 容器（仅启动 API，不运行 Celery worker/beat）：
 
 ```bash
 docker run -d --name acoj-api --env-file .env \
-  -e APP__DEBUG=false -e CELERY__AUTO_START_ENABLED=false \
-  -p 8000:8000 acoj-worker
+  -e APP__DEBUG=false \
+  -p 8000:8000 \
+  acoj-worker
 ```
 
-Worker 容器：
+Worker 容器示例（仅启动 Celery worker，不运行 API）：
 
 ```bash
 docker run -d --name acoj-worker-1 --env-file .env \
-  -e CELERY__AUTO_START_ENABLED=false \
+  --privileged --cgroupns=host \
+  -e APP__DEBUG=false \
   acoj-worker \
-  python -m celery -A app.platform.tasks.celery_app worker --without-mingle --without-gossip --loglevel INFO --pool solo --concurrency 1
+  celery -A app.platform.tasks.celery_app:celery_app worker \
+    -Q judge \
+    --pool threads \
+    --concurrency 8 \
+    --without-mingle \
+    --without-gossip \
+    --loglevel INFO
 ```
 
-Beat 容器：
+Beat 容器（仅启动 RedBeat 调度器）：
 
 ```bash
 docker run -d --name acoj-beat --env-file .env \
-  -e CELERY__AUTO_START_ENABLED=false \
   acoj-worker \
-  python -m celery -A app.platform.tasks.celery_app beat --loglevel INFO --schedule /app/.runtime/celerybeat-schedule
+  celery -A app.platform.tasks.celery_app:celery_app beat \
+    --loglevel INFO \
+    --scheduler redbeat.RedBeatScheduler
 ```
 
-多副本注意事项：
+单容器全量启动（API + Worker + Beat）：
 
-- 所有节点必须使用同一组 `DB__URL`、`REDIS__URL`、`CELERY__BROKER_URL`。
-- Beat 必须单副本，避免重复投递定时任务。
-- 多实例部署时 `ID_GENERATOR__WORKER_ID` 应按实例规划，避免雪花 ID 冲突。
+```bash
+docker run -d --name acoj-all --env-file .env \
+  --privileged --cgroupns=host \
+  -p 8000:8000 \
+  acoj-worker
+```
+
+部署注意：
+
+- 所有 worker 使用同一个 `CELERY__BROKER_URL`。
+- Beat 必须单副本，RedBeat 通过 Redis 锁保证只有一个实例持有锁。
+- 多实例部署时 `ID_GENERATOR__WORKER_ID` 应按实例规划。
+- 判题 worker 建议和 API/DB 隔离部署。
+- root 权限、cgroup、rootfs、挂载白名单必须在目标镜像里真实验证。
+- `--privileged --cgroupns=host` 是最容易验证通过的 Docker 配置。如果生产要收敛权限，需要逐项验证 capability、mount、cgroup 写权限和 namespace 创建能力。
 
 ## 项目结构
 
 ```text
 app/
-  api/          API 路由聚合入口
-  core/         配置、安全、日志、异常、统一响应
-  deps/         FastAPI 依赖注入
-  middleware/   中间件（日志、链路、CORS、上下文）
-  modules/      业务模块（判题模块在此扩展）
-  platform/     DB、Redis、HTTP、Celery、MQ、存储、可观测性等基础设施
-migrations/     Alembic 数据库迁移
-scripts/        开发、测试、迁移辅助脚本
-tests/          测试
+  api/                 API 版本装配入口
+  core/                配置、安全、日志、异常、统一响应
+  deps/                FastAPI 依赖注入
+  middleware/          中间件
+  modules/judge/       判题 pipeline、mode、语言配置、数据加载、计分
+  platform/
+    cache/             Redis 缓存客户端
+    db/                SQLAlchemy 异步会话、基模型、审计、事务
+    email/             邮件发送
+    http/              共享 httpx 异步客户端
+    id_generator/      雪花 ID 生成器
+    module/            模块自动发现系统
+    observability/     metrics/tracing/logging
+    storage/           本地/S3/MinIO/OSS 存储与 judge file cache
+    tasks/             Celery app、RedBeat、async runner
+scripts/               开发、测试、迁移和 seed 辅助脚本
+migrations/            Alembic 数据库迁移
+docs/
+  migration.md
+  worker-sandbox-production-validation.md
+tests/
+  unit/                单元测试
+  test_*.py            真实 Celery/RabbitMQ 集成测试
 ```
 
-## 模块扩展
+## 相关文档
 
-新增业务模块放在 `app/modules/<module_name>` 下：
-
-```text
-app/modules/example/
-  __init__.py
-  module.py     # ModuleSpec 声明
-  model.py      # SQLAlchemy 模型
-  schema.py     # Pydantic 请求/响应对象
-  repository.py # 数据访问
-  service.py    # 业务逻辑
-  router.py     # FastAPI 路由
-  tasks.py      # Celery 任务（可选）
-```
-
-`module.py` 示例：
-
-```python
-from app.platform.module import ModuleSpec, RouteSpec
-
-module = ModuleSpec(
-    name="example",
-    routes=(
-        RouteSpec(
-            version="v1",
-            prefix="/judge",
-            tags=("judge",),
-            router="app.modules.example.router:router",
-        ),
-    ),
-    models=("app.modules.example.model",),
-    startup_hooks=("app.modules.example.lifecycle:startup",),
-    shutdown_hooks=("app.modules.example.lifecycle:shutdown",),
-)
-```
-
-运行时路径规则：
-- `GET /` — 健康检查
-- `/api/v1/*` — 业务接口，按 `ModuleSpec` 自动装配
-
-## 相关项目
-
-- [acoj](https://github.com/jiangbyte/acoj) — ACOJ 完整系统（API 服务端、Web 管理端/门户端、uni-app 多端应用）
-- [acoj-sandbox](https://github.com/jiangbyte/acoj-sandbox) — 沙箱执行引擎（本项目的判题核心依赖）
-- [hei-fastapi](https://github.com/jiangbyte/hei-fastapi) — 全栈脚手架基础
+- [worker/sandbox 生产开发与部署指南](docs/worker-sandbox-production-validation.md)
+- `acoj-sandbox/docs/production.md`
+- `acoj-sandbox/docs/testing.md`
+- `acoj-sandbox/docs/usage.md`
 
 ## License
 

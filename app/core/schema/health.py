@@ -28,7 +28,6 @@ class ReadyChecksResponse(ApiSchema):
     database: HealthCheckItem
     redis: HealthCheckItem
     celery_broker: HealthCheckItem
-    celery_autostart: HealthCheckItem
     storage: HealthCheckItem
 
 
@@ -37,4 +36,3 @@ class ReadyHealthResponse(ApiSchema):
 
     status: str
     checks: ReadyChecksResponse
-

@@ -92,17 +92,6 @@ file_upload_rejected_total = Counter(
     ["reason"],
     registry=registry,
 )
-celery_autostart_process_state = Gauge(
-    "celery_autostart_process_state",
-    "Celery auto-start managed process state",
-    ["process"],
-    registry=registry,
-)
-celery_beat_lock_state = Gauge(
-    "celery_beat_lock_state",
-    "Celery beat lock held by this process",
-    registry=registry,
-)
 
 
 def metrics_enabled() -> bool:
@@ -169,16 +158,6 @@ def record_file_upload_rejected(reason: str) -> None:
         file_upload_rejected_total.labels(reason=reason).inc()
 
 
-def set_celery_process_state(process: str, running: bool) -> None:
-    if metrics_enabled():
-        celery_autostart_process_state.labels(process=process).set(1 if running else 0)
-
-
-def set_celery_beat_lock_state(held: bool) -> None:
-    if metrics_enabled():
-        celery_beat_lock_state.set(1 if held else 0)
-
-
 @contextmanager
 def track_http_client_request(method: str, host: str):
     if not metrics_enabled():
@@ -211,3 +190,81 @@ def track_celery_task(task_name: str):
         celery_task_duration_seconds.labels(task_name=task_name).observe(duration)
 
     yield finalize
+
+
+# ── Sandbox Worker Pool 指标 ───────────────────────────
+
+sandbox_pool_workers = Gauge(
+    "sandbox_pool_workers",
+    "Sandbox pool current worker count (state: available, active, total)",
+    ["state"],
+    registry=registry,
+)
+sandbox_pool_borrow_total = Counter(
+    "sandbox_pool_borrow_total",
+    "Total sandbox worker borrow requests",
+    registry=registry,
+)
+sandbox_pool_borrow_wait_ms = Histogram(
+    "sandbox_pool_borrow_wait_ms",
+    "Sandbox worker borrow wait time in milliseconds",
+    buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 5000),
+    registry=registry,
+)
+sandbox_pool_emergency_total = Counter(
+    "sandbox_pool_emergency_total",
+    "Total emergency worker spawns (borrow timeout fallback)",
+    registry=registry,
+)
+sandbox_pool_replaced_total = Counter(
+    "sandbox_pool_replaced_total",
+    "Total worker replacements (health check failure + max_requests recycle)",
+    registry=registry,
+)
+sandbox_pool_queue_timeout_total = Counter(
+    "sandbox_pool_queue_timeout_total",
+    "Total sandbox worker queue timeout failures",
+    registry=registry,
+)
+
+
+def register_sandbox_pool_metrics(pool) -> None:
+    """注入 Prometheus 回调到 SandboxWorkerPool。"""
+    if not metrics_enabled():
+        return
+
+    last = {
+        "borrow_count": 0,
+        "emergency_count": 0,
+        "replaced_count": 0,
+        "queue_timeout_count": 0,
+    }
+
+    def on_event(p):
+        s = p.stats()
+        sandbox_pool_workers.labels(state="available").set(s["available_count"])
+        sandbox_pool_workers.labels(state="active").set(s["active_count"])
+        sandbox_pool_workers.labels(state="total").set(s["total_count"])
+        borrow_delta = max(0, s["borrow_count"] - last["borrow_count"])
+        if borrow_delta:
+            sandbox_pool_borrow_total.inc(borrow_delta)
+            sandbox_pool_borrow_wait_ms.observe(s.get("borrow_last_wait_ms", 0))
+        emergency_delta = max(0, s["emergency_count"] - last["emergency_count"])
+        if emergency_delta:
+            sandbox_pool_emergency_total.inc(emergency_delta)
+        replaced_delta = max(0, s["replaced_count"] - last["replaced_count"])
+        if replaced_delta:
+            sandbox_pool_replaced_total.inc(replaced_delta)
+        queue_timeout_delta = max(
+            0,
+            s.get("queue_timeout_count", 0) - last["queue_timeout_count"],
+        )
+        if queue_timeout_delta:
+            sandbox_pool_queue_timeout_total.inc(queue_timeout_delta)
+
+        last["borrow_count"] = s["borrow_count"]
+        last["emergency_count"] = s["emergency_count"]
+        last["replaced_count"] = s["replaced_count"]
+        last["queue_timeout_count"] = s.get("queue_timeout_count", 0)
+
+    pool.set_metrics_callback(on_event)

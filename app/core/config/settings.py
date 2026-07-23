@@ -75,30 +75,43 @@ class CorsSettings(BaseSettings):
 
 
 class CelerySettings(BaseSettings):
+    model_config = SettingsConfigDict(extra="ignore")
     broker_url: str = "amqp://guest:guest@127.0.0.1:5672//"
+    result_backend: str = "rpc://"
     worker_log_level: str = "INFO"
     beat_log_level: str = "INFO"
-    worker_pool: str = "solo"
-    worker_concurrency: int = 1
+    worker_pool: str = "threads"
+    worker_concurrency: int = 4
+    worker_prefetch_multiplier: int = 4
     worker_without_mingle: bool = True
     worker_without_gossip: bool = True
     worker_remote_control_enabled: bool = False
     worker_cancel_long_running_tasks_on_connection_loss: bool = True
-    shutdown_timeout_seconds: float = 10.0
-    auto_start_enabled: bool = True
-    auto_start_worker_enabled: bool = True
-    auto_start_beat_enabled: bool = True
-    beat_lock_key: str = "process:celery:beat:lock"
-    beat_lock_ttl_seconds: int = 60
-    beat_lock_renew_seconds: int = 20
-
-
-class MQSettings(BaseSettings):
-    enabled: bool = False
-    url: str = ""
-    reconnect_interval_seconds: float = 5.0
-    publish_exchange: str = ""
-    publish_exchange_type: str = "topic"
+    sandbox_worker_pool_size: int = 16
+    sandbox_borrow_timeout_seconds: float = 0.25
+    sandbox_max_queue_wait_seconds: float = 0.0
+    sandbox_request_timeout_seconds: float = 120.0
+    sandbox_queue_wait_warn_seconds: float = 0.5
+    sandbox_health_check_timeout_seconds: float = 1.0
+    sandbox_standard_parallelism: int = 4
+    sandbox_allow_emergency_worker: bool = False
+    sandbox_compilation_cache_enabled: bool = True
+    sandbox_compilation_cache_dir: str = "/tmp/acoj-ccache"
+    sandbox_compilation_cache_max_mb: int = 512
+    sandbox_compilation_cache_ttl_seconds: int = 3600
+    sandbox_enable_namespaces: bool = False
+    sandbox_rootfs_path: str = ""
+    sandbox_isolate_network: bool = True
+    sandbox_isolate_ipc: bool = True
+    sandbox_isolate_uts: bool = True
+    sandbox_private_mounts: bool = True
+    sandbox_use_pivot_root: bool = True
+    sandbox_bind_workspace: bool = True
+    sandbox_enable_cgroup: bool = False
+    sandbox_cgroup_version: str = "auto"
+    sandbox_cgroup_base_path: str = "/sys/fs/cgroup/acoj-sandbox"
+    sandbox_cgroup_v1_memory_base_path: str = ""
+    sandbox_cgroup_v1_pids_base_path: str = ""
 
 
 class StorageSettings(BaseSettings):
@@ -148,6 +161,11 @@ class StorageSettings(BaseSettings):
     ]
     upload_category_max_length: int = 64
     public_upload_enabled: bool = False
+    # 文件缓存（worker judge 使用，避免重复从远端下载测试数据）
+    cache_enabled: bool = True
+    cache_dir: str = "storage/judge-cache"
+    cache_max_mb: int = 512
+    cache_ttl_seconds: int = 86400 * 7
 
 
 class IdGeneratorSettings(BaseSettings):
@@ -193,7 +211,6 @@ class Settings(BaseSettings):
     mail: MailSettings = Field(default_factory=MailSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)
     celery: CelerySettings = Field(default_factory=CelerySettings)
-    mq: MQSettings = Field(default_factory=MQSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     id_generator: IdGeneratorSettings = Field(default_factory=IdGeneratorSettings)
     swagger: SwaggerSettings = Field(default_factory=SwaggerSettings)

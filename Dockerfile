@@ -34,7 +34,12 @@ COPY pyproject.toml README.md .env ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     python -c 'import os, subprocess, sys, tomllib; data = tomllib.load(open("pyproject.toml", "rb")); deps = data["project"]["dependencies"] + data["project"]["optional-dependencies"]["postgres"]; subprocess.check_call([sys.executable, "-m", "pip", "install", "--index-url", os.environ["PIP_INDEX_URL"], "--prefer-binary", *deps])'
 
+RUN apt-get update && apt-get install -y --no-install-recommends tini && rm -rf /var/lib/apt/lists/*
+
 COPY app ./app
+COPY gunicorn.conf.py entrypoint.sh ./
+
+RUN chmod +x entrypoint.sh
 
 RUN mkdir -p /app/storage /app/.runtime
 
@@ -42,4 +47,5 @@ VOLUME ["/app/storage"]
 
 EXPOSE 8000
 
-CMD ["python", "-m", "app.main"]
+ENTRYPOINT ["tini", "--"]
+CMD ["/app/entrypoint.sh"]

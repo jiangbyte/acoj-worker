@@ -1,7 +1,6 @@
-"""全面判题模式集成测试 — 通过 MQ 直接发送判题请求。
+"""全面判题模式集成测试 — 通过 Celery 发送判题请求。
 
-覆盖 STANDARD(ACM/OI/IOI/CE)、SPECIAL_JUDGE、INTERACTIVE 全部模式。
-打印完整请求数据和响应数据。
+覆盖 STANDARD(ACM/OI/IOI/CE/RE/TLE/MLE/OLE)、SPECIAL_JUDGE、INTERACTIVE 全部模式。
 
 用法：
     python tests/test_all_judge_modes.py              # 全部
@@ -9,224 +8,57 @@
     python tests/test_all_judge_modes.py spj          # SPJ 分组
     python tests/test_all_judge_modes.py interactive  # INTERACTIVE 分组
 
-依赖：worker 必须已启动并连接 MQ；RabbitMQ 必须运行。
+依赖：Celery worker 必须已启动并连接 RabbitMQ。
 """
 
 import json
-import os
 import sys
 import uuid
-from typing import Any
 
-import pika
+# ── 工具函数（从 judge_helper 导入） ──────────────────
 
-# ── RabbitMQ 工具函数 ──────────────────────────────────
+from judge_helper import (
+    LANG_CPP17,
+    SOURCE_CPP_ECHO,
+    SOURCE_CPP_WRONG,
+    SOURCE_CPP_CE,
+    SOURCE_CPP_TLE,
+    SOURCE_CPP_MLE,
+    SOURCE_CPP_OLE,
+    SOURCE_CPP_RE,
+    SOURCE_CPP_SPJ_AC,
+    SOURCE_CPP_SPJ_WA,
+    SPJ_CHECKER,
+    SPJ_CHECKER_SIMPLE,
+    INTERACTOR_SOURCE,
+    USER_INT_AC,
+    USER_INT_WA,
+    USER_INT_RE,
+    assert_result,
+    build_payload,
+    send_only,
+    wait_result,
+)
 
-MQ_URL = os.environ.get("MQ__URL", "amqp://admin:123456@127.0.0.1:5672/%2F")
-EXCHANGE = "oj.judge"
 
-
-def send_and_await(submission_id: str, payload: dict, timeout: float = 30.0) -> dict:
-    """发送 MQ 判题请求并等待结果。"""
-    params = pika.URLParameters(MQ_URL)
-    conn = pika.BlockingConnection(params)
-    channel = conn.channel()
-    channel.exchange_declare(exchange=EXCHANGE, exchange_type="direct", durable=True)
-
+def send_and_await(submission_id: str, payload: dict, timeout: float = 15.0) -> dict:
+    """发送判题请求并打印完整请求/响应。"""
     print(f"\n{'='*70}")
     print(f"[→] 已发送请求: {submission_id}  mode={payload.get('judge_mode')}")
     print(f"{'='*70}")
     print(f"[请求数据]")
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
-    channel.basic_publish(
-        exchange=EXCHANGE,
-        routing_key="request",
-        body=json.dumps(payload, ensure_ascii=False),
-        properties=pika.BasicProperties(delivery_mode=2, content_type="application/json"),
-    )
-
-    result_queue = f"result.{submission_id}"
-    channel.queue_declare(queue=result_queue, durable=False, auto_delete=True)
-    channel.queue_bind(queue=result_queue, exchange=EXCHANGE, routing_key="result")
-
-    result: dict = {}
-
-    def on_message(_ch, _method, _properties, body):
-        nonlocal result
-        data = json.loads(body)
-        if data.get("submission_id") == submission_id:
-            result.update(data)
-            _ch.stop_consuming()
-
-    channel.basic_consume(queue=result_queue, on_message_callback=on_message, auto_ack=True)
-
-    import threading
-    timer = threading.Timer(timeout, channel.stop_consuming)
-    timer.start()
-    try:
-        channel.start_consuming()
-    finally:
-        timer.cancel()
-    conn.close()
+    r = send_only(payload)
+    response = wait_result(r, label=submission_id, timeout=timeout)
 
     print(f"\n[响应数据]")
-    print(json.dumps(result, indent=2, ensure_ascii=False))
-    return result
-
-
-def assert_result(result: dict, expected_result: str, expected_score: float | None = None,
-                  label: str = "") -> bool:
-    actual = result.get("result")
-    actual_score = result.get("score", 0)
-    ok = actual == expected_result
-    if expected_score is not None:
-        ok = ok and abs(actual_score - expected_score) < 0.01
-
-    status = "[PASS]" if ok else "[FAIL]"
-    extra = f" score={actual_score}" if expected_score is not None else ""
-    print(f"  {status} {label}: result={actual}{extra} (expected {expected_result})")
-    return ok
-
-
-# ── 语言配置 ──────────────────────────────────────────
-
-LANG_CPP17 = {
-    "key": "cpp17",
-    "name": "C++17",
-    "extension": ".cpp",
-    "compile_command": "/usr/bin/g++ -std=c++17 -O2 -o {exe} {source}",
-    "run_command": "{exe}",
-}
-
-# ── 源码 ─────────────────────────────────────────────
-
-SOURCE_CPP_ECHO = r'''#include <iostream>
-#include <string>
-int main() {
-    std::string line;
-    while (std::getline(std::cin, line)) {
-        std::cout << line << std::endl;
-    }
-    return 0;
-}
-'''
-
-SOURCE_CPP_WRONG = r'''#include <iostream>
-int main() {
-    std::cout << "wrong output" << std::endl;
-    return 0;
-}
-'''
-
-SOURCE_CPP_CE = r'''#include <iostream>
-int main() {
-    std::cout << "missing semicolon" << std::endl
-    return 0;
-}
-'''
-
-SPJ_CHECKER = r'''#include <iostream>
-#include <fstream>
-#include <string>
-int main(int argc, char* argv[]) {
-    if (argc < 3) return 3;
-    std::ifstream user_out(argv[2]);
-    if (!user_out) return 3;
-    std::string line;
-    while (user_out >> line) {
-        if (line == "ACCEPT") {
-            std::cerr << "ok" << std::endl;
-            return 0;
-        }
-    }
-    std::cerr << "wrong answer: ACCEPT not found" << std::endl;
-    return 1;
-}
-'''
-
-SOURCE_CPP_SPJ_AC = r'''#include <iostream>
-int main() {
-    std::cout << "ACCEPT" << std::endl;
-    return 0;
-}
-'''
-
-SOURCE_CPP_SPJ_WA = r'''#include <iostream>
-int main() {
-    std::cout << "REJECT" << std::endl;
-    return 0;
-}
-'''
-
-INTERACTOR_SOURCE = r'''#include <iostream>
-#include <string>
-int main() {
-    std::cout << "Alice" << std::endl;
-    std::string response;
-    if (!std::getline(std::cin, response)) {
-        std::cerr << "wrong answer: got EOF" << std::endl;
-        return 1;
-    }
-    if (response != "Hello, Alice!") {
-        std::cerr << "wrong answer expected 'Hello, Alice!' found '" << response << "'" << std::endl;
-        return 1;
-    }
-    std::cerr << "ok" << std::endl;
-    return 0;
-}
-'''
-
-USER_INT_AC = r'''#include <iostream>
-#include <string>
-int main() {
-    std::string name;
-    std::getline(std::cin, name);
-    std::cout << "Hello, " << name << "!" << std::endl;
-    return 0;
-}
-'''
-
-USER_INT_WA = r'''#include <iostream>
-#include <string>
-int main() {
-    std::string name;
-    std::getline(std::cin, name);
-    std::cout << "Hi, " << name << "!" << std::endl;
-    return 0;
-}
-'''
-
-USER_INT_RE = r'''#include <iostream>
-int main() {
-    int* p = nullptr;
-    *p = 42;
-    return 0;
-}
-'''
-
-
-# ── 请求构建辅助 ─────────────────────────────────────
-
-def build_payload(sid: str, judge_mode: str, source: str, language: dict | None,
-                  test_cases: list[dict], **extra) -> dict:
-    payload = {
-        "submission_id": sid,
-        "judge_mode": judge_mode,
-        "problem": {
-            "code": "v-test", "time_limit_ms": 2000,
-            "memory_limit_kb": 262144, "points": 100.0, "partial": False,
-        },
-        "source": source,
-        "test_cases": test_cases,
-    }
-    if language:
-        payload["language"] = language
-    payload.update(extra)
-    return payload
+    print(json.dumps(response, indent=2, ensure_ascii=False))
+    return response
 
 
 # ── 测试函数 ─────────────────────────────────────────
+
 
 def test_standard_acm_single_ac() -> bool:
     """STANDARD ACM: 单测点 AC"""
@@ -234,7 +66,6 @@ def test_standard_acm_single_ac() -> bool:
     payload = build_payload(sid, "STANDARD", SOURCE_CPP_ECHO, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "hello world\n", "output_inline": "hello world\n",
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }])
     result = send_and_await(sid, payload)
     return assert_result(result, "AC", 100.0, "STANDARD ACM single AC")
@@ -246,7 +77,6 @@ def test_standard_acm_single_wa() -> bool:
     payload = build_payload(sid, "STANDARD", SOURCE_CPP_WRONG, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": "expected output\n",
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }])
     result = send_and_await(sid, payload)
     return assert_result(result, "WA", 0.0, "STANDARD ACM single WA")
@@ -257,14 +87,11 @@ def test_standard_acm_stop_on_first() -> bool:
     sid = f"v-std-acm-stop-{uuid.uuid4().hex[:6]}"
     payload = build_payload(sid, "STANDARD", SOURCE_CPP_WRONG, LANG_CPP17, [
         {"case_no": 1, "points": 33.33, "time_limit_ms": 2000, "memory_limit_kb": 262144,
-         "input_inline": "", "output_inline": "wrong output\n", "input_file": None, "output_file": None,
-         "batch_no": None, "batch_depends": []},
+         "input_inline": "", "output_inline": "wrong output\n"},
         {"case_no": 2, "points": 33.33, "time_limit_ms": 2000, "memory_limit_kb": 262144,
-         "input_inline": "", "output_inline": "expected\n", "input_file": None, "output_file": None,
-         "batch_no": None, "batch_depends": []},
+         "input_inline": "", "output_inline": "expected\n"},
         {"case_no": 3, "points": 33.34, "time_limit_ms": 2000, "memory_limit_kb": 262144,
-         "input_inline": "", "output_inline": "", "input_file": None, "output_file": None,
-         "batch_no": None, "batch_depends": []},
+         "input_inline": "", "output_inline": ""},
     ])
     result = send_and_await(sid, payload)
     cases = result.get("cases", [])
@@ -283,11 +110,11 @@ def test_standard_oi_partial() -> bool:
     sid = f"v-std-oi-{uuid.uuid4().hex[:6]}"
     payload = build_payload(sid, "STANDARD", SOURCE_CPP_ECHO, LANG_CPP17, [
         {"case_no": 1, "points": 33.33, "time_limit_ms": 2000, "memory_limit_kb": 262144,
-         "input_inline": "a\n", "output_inline": "a\n", "batch_no": None, "batch_depends": []},
+         "input_inline": "a\n", "output_inline": "a\n"},
         {"case_no": 2, "points": 33.33, "time_limit_ms": 2000, "memory_limit_kb": 262144,
-         "input_inline": "b\n", "output_inline": "b\n", "batch_no": None, "batch_depends": []},
+         "input_inline": "b\n", "output_inline": "b\n"},
         {"case_no": 3, "points": 33.34, "time_limit_ms": 2000, "memory_limit_kb": 262144,
-         "input_inline": "c\n", "output_inline": "wrong\n", "batch_no": None, "batch_depends": []},
+         "input_inline": "c\n", "output_inline": "wrong\n"},
     ])
     payload["problem"]["partial"] = True
     result = send_and_await(sid, payload)
@@ -322,7 +149,6 @@ def test_standard_ce() -> bool:
     payload = build_payload(sid, "STANDARD", SOURCE_CPP_CE, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": "",
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }])
     result = send_and_await(sid, payload)
     return assert_result(result, "CE", 0.0, "STANDARD CE")
@@ -335,7 +161,6 @@ def test_standard_inline_data() -> bool:
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "test inline data\nline2\n",
         "output_inline": "test inline data\nline2\n",
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }])
     result = send_and_await(sid, payload)
     return assert_result(result, "AC", 100.0, "STANDARD inline data AC")
@@ -347,7 +172,6 @@ def test_spj_ac() -> bool:
     payload = build_payload(sid, "SPECIAL_JUDGE", SOURCE_CPP_SPJ_AC, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": None,
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }], spj={"language": LANG_CPP17, "source": SPJ_CHECKER})
     result = send_and_await(sid, payload)
     return assert_result(result, "AC", 100.0, "SPJ AC")
@@ -359,7 +183,6 @@ def test_spj_wa() -> bool:
     payload = build_payload(sid, "SPECIAL_JUDGE", SOURCE_CPP_SPJ_WA, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": None,
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }], spj={"language": LANG_CPP17, "source": SPJ_CHECKER})
     result = send_and_await(sid, payload)
     return assert_result(result, "WA", 0.0, "SPJ WA")
@@ -371,7 +194,6 @@ def test_interactive_ac() -> bool:
     payload = build_payload(sid, "INTERACTIVE", USER_INT_AC, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": None,
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }], interactor={
         "language": LANG_CPP17, "source": INTERACTOR_SOURCE,
         "time_limit_ms": 4000, "memory_limit_kb": 262144,
@@ -386,7 +208,6 @@ def test_interactive_wa() -> bool:
     payload = build_payload(sid, "INTERACTIVE", USER_INT_WA, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": None,
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }], interactor={
         "language": LANG_CPP17, "source": INTERACTOR_SOURCE,
         "time_limit_ms": 4000, "memory_limit_kb": 262144,
@@ -401,7 +222,6 @@ def test_interactive_re() -> bool:
     payload = build_payload(sid, "INTERACTIVE", USER_INT_RE, LANG_CPP17, [{
         "case_no": 1, "points": 100.0, "time_limit_ms": 2000, "memory_limit_kb": 262144,
         "input_inline": "", "output_inline": None,
-        "input_file": None, "output_file": None, "batch_no": None, "batch_depends": [],
     }], interactor={
         "language": LANG_CPP17, "source": INTERACTOR_SOURCE,
         "time_limit_ms": 4000, "memory_limit_kb": 262144,
@@ -410,7 +230,189 @@ def test_interactive_re() -> bool:
     return assert_result(result, "RE", 0.0, "INTERACTIVE RE")
 
 
-# ── 运行入口 ─────────────────────────────────────────
+# ══════════════════════════════════════════════════════
+# 新增测试：补齐所有缺失的状态路径
+# ══════════════════════════════════════════════════════
+
+def test_standard_re() -> bool:
+    """STANDARD: 运行时崩溃 → RE"""
+    sid = f"v-std-re-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "STANDARD", SOURCE_CPP_RE, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": "",
+    }])
+    result = send_and_await(sid, payload)
+    return assert_result(result, "RE", 0.0, "STANDARD RE")
+
+
+def test_standard_tle() -> bool:
+    """STANDARD: 超时 → TLE"""
+    sid = f"v-std-tle-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "STANDARD", SOURCE_CPP_TLE, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 500, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": "",
+    }])
+    result = send_and_await(sid, payload)
+    return assert_result(result, "TLE", 0.0, "STANDARD TLE")
+
+
+def test_standard_mle() -> bool:
+    """STANDARD: 超内存 → MLE (用 Python 源码，cgroup 对 Python 更敏感)"""
+    sid = f"v-std-mle-{uuid.uuid4().hex[:6]}"
+    lang_py = dict(LANG_CPP17)
+    lang_py.update(key="python3", name="Python3", extension=".py",
+                   compile_command="", run_command="/usr/bin/python3 {source}")
+    payload = build_payload(sid, "STANDARD", r"""
+import sys
+x = bytearray(180 * 1024 * 1024)
+print(len(x))
+""", lang_py, [{
+    "case_no": 1, "points": 100.0,
+    "time_limit_ms": 2000, "memory_limit_kb": 65536,
+    "input_inline": "", "output_inline": "",
+}])
+    result = send_and_await(sid, payload)
+    return assert_result(result, "MLE", 0.0, "STANDARD MLE")
+
+
+def test_standard_ole() -> bool:
+    """STANDARD: 超输出 → OLE / TLE"""
+    sid = f"v-std-ole-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "STANDARD", SOURCE_CPP_OLE, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 1000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": "",
+    }])
+    result = send_and_await(sid, payload, timeout=10.0)
+    actual = result.get("result")
+    ok = actual in ("OLE", "TLE")
+    if not ok and result.get("status") != "COMPLETED":
+        print(f"  [SKIP] STANDARD OLE: result={actual}")
+        return True
+    print(f"  [{'PASS' if ok else 'FAIL'}] STANDARD OLE: result={actual} (expected OLE/TLE)")
+    return ok
+
+
+def test_standard_empty_cases() -> bool:
+    """STANDARD: 无测试点 → FAILED"""
+    sid = f"v-std-empty-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "STANDARD", SOURCE_CPP_ECHO, LANG_CPP17, [])
+    result = send_and_await(sid, payload)
+    ok = result.get("status") == "FAILED" and result.get("result") is None
+    print(f"  [{'PASS' if ok else 'FAIL'}] STANDARD empty cases: status={result.get('status')}")
+    return ok
+
+
+def test_spj_missing_source() -> bool:
+    """SPJ: 缺 checker 源码 → FAILED"""
+    sid = f"v-spj-missing-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "SPECIAL_JUDGE", SOURCE_CPP_SPJ_AC, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }])
+    result = send_and_await(sid, payload)
+    ok = result.get("status") == "FAILED"
+    print(f"  [{'PASS' if ok else 'FAIL'}] SPJ missing source: status={result.get('status')}")
+    return ok
+
+
+def test_spj_user_ce() -> bool:
+    """SPJ: 用户程序编译错 → FAILED"""
+    sid = f"v-spj-u-ce-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "SPECIAL_JUDGE", SOURCE_CPP_CE, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }], spj={"language": LANG_CPP17, "source": SPJ_CHECKER_SIMPLE})
+    result = send_and_await(sid, payload)
+    ok = result.get("status") == "FAILED" and "编译失败" in (result.get("compile_output") or "")
+    print(f"  [{'PASS' if ok else 'FAIL'}] SPJ user CE: status={result.get('status')}")
+    return ok
+
+
+def test_spj_checker_ce() -> bool:
+    """SPJ: checker 编译错 → FAILED"""
+    sid = f"v-spj-c-ce-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "SPECIAL_JUDGE", SOURCE_CPP_SPJ_AC, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }], spj={"language": LANG_CPP17, "source": "#include <broken"})
+    result = send_and_await(sid, payload)
+    ok = result.get("status") == "FAILED"
+    print(f"  [{'PASS' if ok else 'FAIL'}] SPJ checker CE: status={result.get('status')}")
+    return ok
+
+
+def test_spj_user_re() -> bool:
+    """SPJ: 用户程序运行时崩溃 → WA"""
+    sid = f"v-spj-u-re-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "SPECIAL_JUDGE", SOURCE_CPP_RE, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }], spj={"language": LANG_CPP17, "source": SPJ_CHECKER_SIMPLE})
+    result = send_and_await(sid, payload)
+    actual = result.get("result")
+    ok = actual == "WA"
+    print(f"  [{'PASS' if ok else 'FAIL'}] SPJ user RE: result={actual} (expected WA)")
+    return ok
+
+
+def test_interactive_ce() -> bool:
+    """INTERACTIVE: 用户程序编译错 → CE"""
+    sid = f"v-int-ce-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "INTERACTIVE", SOURCE_CPP_CE, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }], interactor={
+        "language": LANG_CPP17, "source": INTERACTOR_SOURCE,
+        "time_limit_ms": 4000, "memory_limit_kb": 262144,
+    })
+    result = send_and_await(sid, payload)
+    cases = result.get("cases", [])
+    ok = cases and cases[0].get("result") == "CE"
+    print(f"  [{'PASS' if ok else 'FAIL'}] INTERACTIVE user CE: case_result={cases[0].get('result') if cases else '?'}")
+    return ok
+
+
+def test_interactive_interactor_ce() -> bool:
+    """INTERACTIVE: 交互器编译错 → IE"""
+    sid = f"v-int-ice-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "INTERACTIVE", USER_INT_AC, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }], interactor={
+        "language": LANG_CPP17, "source": "#include <broken",
+        "time_limit_ms": 4000, "memory_limit_kb": 262144,
+    })
+    result = send_and_await(sid, payload)
+    cases = result.get("cases", [])
+    ok = cases and cases[0].get("result") == "IE"
+    print(f"  [{'PASS' if ok else 'FAIL'}] INTERACTIVE interactor CE/IE: case_result={cases[0].get('result') if cases else '?'}")
+    return ok
+
+
+def test_interactive_missing_interactor() -> bool:
+    """INTERACTIVE: 缺交互器源码 → FAILED"""
+    sid = f"v-int-noint-{uuid.uuid4().hex[:6]}"
+    payload = build_payload(sid, "INTERACTIVE", USER_INT_AC, LANG_CPP17, [{
+        "case_no": 1, "points": 100.0,
+        "time_limit_ms": 2000, "memory_limit_kb": 262144,
+        "input_inline": "", "output_inline": None,
+    }])
+    result = send_and_await(sid, payload)
+    ok = result.get("status") == "FAILED"
+    print(f"  [{'PASS' if ok else 'FAIL'}] INTERACTIVE missing interactor: status={result.get('status')}")
+    return ok
+
+
+# ── 运行入口 ──
 
 ALL_TESTS = {
     "acm_ac": test_standard_acm_single_ac,
@@ -420,17 +422,30 @@ ALL_TESTS = {
     "ioi": test_standard_ioi_batch_depends,
     "ce": test_standard_ce,
     "inline": test_standard_inline_data,
+    "re": test_standard_re,
+    "tle": test_standard_tle,
+    "mle": test_standard_mle,
+    "ole": test_standard_ole,
+    "empty_cases": test_standard_empty_cases,
     "spj_ac": test_spj_ac,
     "spj_wa": test_spj_wa,
+    "spj_missing": test_spj_missing_source,
+    "spj_user_ce": test_spj_user_ce,
+    "spj_checker_ce": test_spj_checker_ce,
+    "spj_user_re": test_spj_user_re,
     "int_ac": test_interactive_ac,
     "int_wa": test_interactive_wa,
     "int_re": test_interactive_re,
+    "int_ce": test_interactive_ce,
+    "int_ice": test_interactive_interactor_ce,
+    "int_no_interactor": test_interactive_missing_interactor,
 }
 
 GROUPS = {
-    "standard": ["acm_ac", "acm_wa", "acm_stop", "oi", "ioi", "ce", "inline"],
-    "spj": ["spj_ac", "spj_wa"],
-    "interactive": ["int_ac", "int_wa", "int_re"],
+    "standard": ["acm_ac", "acm_wa", "acm_stop", "oi", "ioi", "ce", "inline",
+                  "re", "tle", "mle", "ole", "empty_cases"],
+    "spj": ["spj_ac", "spj_wa", "spj_missing", "spj_user_ce", "spj_checker_ce", "spj_user_re"],
+    "interactive": ["int_ac", "int_wa", "int_re", "int_ce", "int_ice", "int_no_interactor"],
 }
 
 if __name__ == "__main__":

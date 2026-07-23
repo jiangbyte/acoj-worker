@@ -25,8 +25,6 @@ def create_app() -> FastAPI:
     # 延迟导入：确保 setup_logging() 先配置好，模块发现的日志才能正常输出
     from app.api.router import router as api_router
 
-    logger.info("create_app: api_router has %d routes", len(api_router.routes))
-
     app = FastAPI(
         title=settings.app.name,
         debug=False,
@@ -47,25 +45,7 @@ def create_app() -> FastAPI:
     async def root() -> RootHealthResponse:
         return RootHealthResponse(status="ok", service=settings.app.name)
 
-    logger.info("create_app: app.routes before include_router = %d", len(app.routes))
-
-    # 诊断：检查 api_router.routes 中的路由类型分布
-    from collections import Counter
-    route_types = Counter(type(r).__name__ for r in api_router.routes)
-    logger.info("create_app: api_router route types: %s", dict(route_types))
-
     app.include_router(api_router)
-    logger.info("create_app: app.routes after include_router = %d", len(app.routes))
-
-    # 如果 include_router 没生效，尝试逐个添加
-    if len(app.routes) < 10 and len(api_router.routes) > 10:
-        logger.warning(
-            "include_router only added %d routes, expected ~%d. Attempting direct route injection.",
-            len(app.routes) - 5,
-            len(api_router.routes),
-        )
-        for route in api_router.routes:
-            app.routes.append(route)
-        logger.info("create_app: app.routes after direct injection = %d", len(app.routes))
+    logger.info("Application created with %d routes", len(app.routes))
 
     return app

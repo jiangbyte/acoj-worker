@@ -33,6 +33,23 @@ class S3CompatibleStorage:
         self.client.put_object(Bucket=self.bucket, Key=object_name, Body=content, ContentType=content_type)
         return self.get_object_url(object_name)
 
+    def download_bytes(self, object_name: str) -> bytes:
+        resp = self.client.get_object(Bucket=self.bucket, Key=object_name)
+        return resp["Body"].read()
+
+    def head_object(self, object_name: str) -> dict | None:
+        try:
+            resp = self.client.head_object(Bucket=self.bucket, Key=object_name)
+            return {
+                "etag": resp.get("ETag", "").strip('"'),
+                "size": resp.get("ContentLength", 0),
+                "last_modified": resp.get("LastModified"),
+            }
+        except Exception as e:
+            if hasattr(e, "response") and e.response.get("Error", {}).get("Code") == "404":
+                return None
+            raise
+
     def delete_object(self, object_name: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=object_name)
 

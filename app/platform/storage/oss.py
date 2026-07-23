@@ -18,6 +18,22 @@ class OSSStorage:
         self.bucket.put_object(object_name, content, headers=headers)
         return self.get_object_url(object_name)
 
+    def download_bytes(self, object_name: str) -> bytes:
+        result = self.bucket.get_object(object_name)
+        return result.read()
+
+    def head_object(self, object_name: str) -> dict | None:
+        try:
+            result = self.bucket.head_object(object_name)
+            import oss2
+            return {
+                "etag": result.headers.get("etag", "").strip('"'),
+                "size": result.content_length or 0,
+                "last_modified": result.headers.get("last-modified"),
+            }
+        except oss2.exceptions.NoSuchKey:
+            return None
+
     def delete_object(self, object_name: str) -> None:
         self.bucket.delete_object(object_name)
 

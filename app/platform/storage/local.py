@@ -18,6 +18,20 @@ class LocalStorage:
         target.write_bytes(content)
         return self.get_object_url(object_name)
 
+    def download_bytes(self, object_name: str) -> bytes:
+        return self.get_path(object_name).read_bytes()
+
+    def head_object(self, object_name: str) -> dict | None:
+        path = self.get_path(object_name)
+        if not path.exists():
+            return None
+        stat = path.stat()
+        return {
+            "etag": str(stat.st_mtime_ns),
+            "size": stat.st_size,
+            "last_modified": stat.st_mtime,
+        }
+
     def delete_object(self, object_name: str) -> None:
         target = self.get_path(object_name)
         if target.exists():
