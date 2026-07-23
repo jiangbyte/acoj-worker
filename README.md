@@ -148,8 +148,8 @@ celery -A app.platform.tasks.celery_app:celery_app beat \
 
 生产建议：
 
-- 长任务/TLE 多：`WORKER_PREFETCH_MULTIPLIER=1`。
-- 短任务吞吐优先：可以调到 `2-4`，需要监控队列公平性。
+- `worker_prefetch_multiplier` 默认 `4`，prefetch = concurrency × 4，适合大多数场景。
+- 长任务/TLE 占比极高、多 worker 水平扩展时对公平性敏感，可降到 `1`。
 - 多 worker 容器水平扩展通常比单容器无限提高 concurrency 更稳。
 
 Celery result backend 使用 Redis（由 `REDIS__URL` 提供），通过 RedBeat 管理定时任务。
@@ -321,6 +321,60 @@ python tests/test_all_judge_modes.py
 
 生产路径必须额外在目标 Docker/宿主环境执行 `acoj-sandbox` root integration，详见 [worker/sandbox 生产开发与部署指南](docs/worker-sandbox-production-validation.md)。
 
+## 性能基准
+
+`tests/run_benchmark.py` 是性能基准测试脚本，在真实 Celery + RabbitMQ + sandbox 环境下测量判题吞吐和延迟。
+
+支持 C++（编译型）和 Python（解释型）两种语言对比，每种语言跑三种负载模式，
+外加 C++ 三种判题模式（STANDARD / SPJ / INTERACTIVE）性能对比：
+
+| 模式 | 说明 |
+|------|------|
+| Burst AC | 64 个 AC 任务并发发送，统计吞吐和延迟分布 |
+| Sustained | 4 线程持续 60 秒发送 AC 任务，统计稳定吞吐 |
+| Mixed | 20 AC + 3 TLE + 5 WA 混合负载，验证 TLE 不阻塞正常判题 |
+| 判题模式对比 | 测试三种判题模式（STANDARD / SPJ / INTERACTIVE）在 C++ 和 Python 语言下的性能 |
+
+运行完成后生成结果图表和 Markdown 表格：
+
+```bash
+# 先启动 Celery worker
+celery -A app.platform.tasks.celery_app:celery_app worker -Q judge --pool threads --concurrency 4
+
+# 另开终端运行基准测试
+PYTHONPATH=/path/to/acoj-sandbox/python:/path/to/acoj-worker \
+python tests/run_benchmark.py
+
+# 生成图表和 Markdown 表格
+python scripts/generate_benchmark_chart.py
+```
+
+结果写入 `docs/benchmark.png` 和 `docs/benchmark_result.json`。
+
+### 基准测试结果
+
+> **测试环境**：WSL2 (Debian), 16 核 CPU, 7.6GB 内存, Docker 容器 (`--privileged --cgroupns=host --network host`)，基础镜像 `acoj-worker-sec-test:patched` (Ubuntu 24.04, acoj-sandbox 本地编译), RabbitMQ 4.1.5, Redis 8.6.2  
+> **Worker 配置**：`concurrency=4, prefetch_multiplier=4, pool_size=16, pool=threads`  
+> **负载**：Burst AC=64 并发（同语言同时发送）, Sustained=4 线程持续 60s, Mixed=20AC+3TLE+5WA
+
+![性能基准图表](docs/benchmark.png)
+
+| 语言 | 测试 | 请求 | 成功 | 耗时(s) | 吞吐(req/s) | P50/P95/P99(ms) | 平均延迟(ms) |
+|------|------|------|------|---------|-------------|-----------------|-------------|
+| C++ | Burst AC | 64 | 64/0 | 5.99 | 10.69 | 4.9/72.3/1811.2 | 93.5 |
+| C++ | Sustained | 6169 | 6169/0 | 60.03 | 102.77 | - | - |
+| C++ | Mixed | 28 | AC=20 TLE=3 WA=5 | 7.4 | - | - | - |
+| Python | Burst AC | 64 | 64/0 | 4.54 | 14.1 | 1.8/77.3/1865.0 | 70.9 |
+| Python | Sustained | 5348 | 5348/0 | 60.01 | 89.12 | - | - |
+| Python | Mixed | 28 | AC=20 TLE=3 WA=5 | 5.49 | - | - | - |
+|判题模式对比|---|---|---|---|---|---|---|
+| C++ | STANDARD(C++) | 16 | 16/0 | 0.16 | 97.11 | 4.2/35.7/60.5 | 10.3 |
+| Python | STANDARD(Python) | 16 | 16/0 | 0.43 | 37.31 | 3.5/107.5/141.7 | 26.8 |
+| C++ | SPJ(C++) | 16 | 16/0 | 1.94 | 8.24 | 4.1/476.5/1564.8 | 121.3 |
+| Python | SPJ(Python) | 16 | 16/0 | 2.01 | 7.95 | 3.6/496.3/1612.3 | 125.7 |
+| C++ | INTERACTIVE(C++) | 16 | 16/0 | 7.37 | 2.17 | 333.5/1139.0/2286.6 | 460.9 |
+| Python | INTERACTIVE(Python) | 16 | 16/0 | 0.21 | 77.6 | 8.1/41.8/59.0 | 12.9 |
+
 ## Docker 部署
 
 构建：
@@ -422,6 +476,7 @@ tests/
 
 ## 相关文档
 
+- [MQ 数据协议说明](docs/mq-protocol.md)
 - [worker/sandbox 生产开发与部署指南](docs/worker-sandbox-production-validation.md)
 - `acoj-sandbox/docs/production.md`
 - `acoj-sandbox/docs/testing.md`

@@ -263,6 +263,17 @@ int main() {
 }
 """
 
+# Python 交互判题用户程序（与 C++ INTERACTOR_SOURCE 协议一致）
+USER_INT_PY_AC = """import sys
+name = sys.stdin.readline().strip()
+print("Hello, " + name + "!")
+"""
+
+USER_INT_PY_WA = """import sys
+name = sys.stdin.readline().strip()
+print("Hi, " + name + "!")
+"""
+
 # ── 请求构建辅助 ──
 
 

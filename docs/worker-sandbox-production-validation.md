@@ -95,15 +95,15 @@ CELERY__BROKER_URL=amqp://user:password@rabbitmq:5672//
 CELERY__RESULT_BACKEND=rpc://
 CELERY__WORKER_POOL=threads
 CELERY__WORKER_CONCURRENCY=8
-CELERY__WORKER_PREFETCH_MULTIPLIER=1
+CELERY__WORKER_PREFETCH_MULTIPLIER=4
 CELERY__WORKER_REMOTE_CONTROL_ENABLED=false
 CELERY__WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS=true
 ```
 
 prefetch 选择：
 
-- `1`：生产默认推荐，长任务/TLE 多时更公平，避免单 worker 预取太多长任务。
-- `2-4`：短任务多、吞吐优先时可提高，需要监控队列等待和 worker 间公平性。
+- `4`：默认值，适合大多数场景。prefetch = concurrency × 4，每个 worker 预取少量缓冲任务，减少 RabbitMQ 往返开销。
+- `1`：长任务/TLE 占比极高且多 worker 水平扩展时，降低预取可提升任务分配公平性。
 
 ### sandbox pool
 
@@ -203,7 +203,7 @@ docker run -d --name acoj-worker-1 \
   -e CELERY__AUTO_START_ENABLED=false \
   -e CELERY__WORKER_POOL=threads \
   -e CELERY__WORKER_CONCURRENCY=8 \
-  -e CELERY__WORKER_PREFETCH_MULTIPLIER=1 \
+  -e CELERY__WORKER_PREFETCH_MULTIPLIER=4 \
   -e CELERY__SANDBOX_WORKER_POOL_SIZE=32 \
   -e CELERY__SANDBOX_ENABLE_NAMESPACES=true \
   -e CELERY__SANDBOX_ENABLE_CGROUP=true \
@@ -490,7 +490,7 @@ judge 0 0
 
 ## 常见问题
 
-### worker 超出并行能力为什么不直接报错？
+### worker 超出并行能力不直接报错
 
 正确行为是排队。
 
@@ -502,18 +502,18 @@ judge 0 0
 
 `sandbox_max_queue_wait_seconds=0.0` 表示 sandbox pool 不设置总等待上限，满池时持续按等待 slice 排队。
 
-### 为什么 interactive RE/WA 不应等待十几秒？
+### interactive RE/WA 不等待十几秒
 
 交互模式中，如果一侧已经异常结束，另一侧通常阻塞在 FIFO 读写。worker 会关闭 FIFO holder fd，让另一侧尽快收到 EOF 或 broken pipe，只保留 1 秒收尾时间。
 
-### 为什么生产建议 prefetch=1？
+### prefetch 选择建议
 
-判题任务耗时差异很大。prefetch 过高时，一个 worker 可能预取多个 TLE/长任务，导致其他 worker 空闲但队列任务已被占住。`1` 更公平，`2-4` 适合短任务吞吐优化。
+判题任务耗时差异很大。prefetch 过高时，一个 worker 可能预取多个 TLE/长任务，导致其他 worker 空闲但队列任务已被占住。默认 `4`（prefetch = concurrency × 4）对大多数场景足够。如果长任务/TLE 占比极高、多 worker 水平扩展时对公平性敏感，可降到 `1`。
 
-### 为什么 Docker 中 Celery 会提示 root 运行风险？
+### Docker 中 Celery 提示 root 运行风险
 
 sandbox 的 namespace/cgroup/rootfs 操作通常需要 root 或等价 capability。短期可在专用 runner 容器中接受该模式；长期建议拆分最小权限 helper 或专用 runner 节点。
 
-### 为什么更新 sandbox 后必须重新安装？
+### 更新 sandbox 后必须重新安装
 
 Python 包和 C++ binary 都可能变化。生产镜像应重新构建，验证环境应使用全新安装目录。
