@@ -1,4 +1,3 @@
-import asyncio
 import logging
 
 from celery import Celery
@@ -11,7 +10,7 @@ logger = logging.getLogger(__name__)
 celery_app = Celery(
     "hei-fastapi",
     broker=settings.celery.broker_url,
-    backend=settings.redis.url,
+    backend=settings.celery.result_backend or settings.redis.url,
     include=["app.worker.tasks"],
 )
 celery_app.conf.task_default_queue = "default"
@@ -19,6 +18,7 @@ celery_app.conf.worker_enable_remote_control = settings.celery.worker_remote_con
 celery_app.conf.worker_cancel_long_running_tasks_on_connection_loss = (
     settings.celery.worker_cancel_long_running_tasks_on_connection_loss
 )
+celery_app.conf.worker_prefetch_multiplier = settings.celery.worker_prefetch_multiplier
 celery_app.conf.redbeat_redis_url = settings.redis.url
 celery_app.conf.redbeat_lock_key = "redbeat:lock"
 
@@ -29,8 +29,12 @@ sync_to_redbeat(celery_app)
 
 @worker_process_init.connect
 def _worker_process_init(**_: object) -> None:
+    # Must share WorkerAsyncRunner's loop: asyncio.run() would bind Redis
+    # connections to a temporary loop that is closed before tasks run.
     try:
-        asyncio.run(_startup_worker_infra())
+        from app.platform.tasks.async_runner import worker_async_runner
+
+        worker_async_runner.run(_startup_worker_infra())
     except Exception:
         logger.exception("Failed to initialize worker infrastructure")
         raise
@@ -39,30 +43,23 @@ def _worker_process_init(**_: object) -> None:
 @worker_process_shutdown.connect
 def _worker_process_shutdown(**_: object) -> None:
     try:
-        asyncio.run(_shutdown_worker_infra())
+        from app.platform.tasks.async_runner import worker_async_runner
+
+        worker_async_runner.run(_shutdown_worker_infra())
+        worker_async_runner.close()
     except Exception:
         logger.warning("Failed to shutdown worker infrastructure", exc_info=True)
 
 
 async def _startup_worker_infra() -> None:
+    """Judge Celery worker: init Redis; config/storage from env (STORAGE__*)."""
     from app.platform.cache.redis import init_redis
-    from app.platform.config.apply import apply_all_config
-    from app.platform.config.reader import config_reader
-    from app.platform.config.sync import start_config_sync_listener_thread
-    from app.platform.db.session import init_engine
 
-    init_engine()
     await init_redis()
-    await config_reader.load_all()
-    apply_all_config()
-    start_config_sync_listener_thread()
+    logger.info("worker infra ready: redis; storage from STORAGE__* env")
 
 
 async def _shutdown_worker_infra() -> None:
     from app.platform.cache.redis import close_redis
-    from app.platform.config.sync import stop_config_sync_listener_thread
-    from app.platform.db.session import close_engine
 
-    stop_config_sync_listener_thread()
     await close_redis()
-    await close_engine()

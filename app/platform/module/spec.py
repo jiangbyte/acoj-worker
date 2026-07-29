@@ -29,7 +29,7 @@ class ConfigModelSpec:
     """声明模块级 Pydantic BaseSettings 配置模型。"""
     import_path: str     # "app.modules.x.config:MySettings"
     prefix: str = ""     # env 前缀
-    load_from_db: bool = False  # 是否从 sys_config 表加载覆盖
+    load_from_db: bool = False
 
 
 @dataclass(frozen=True, slots=True)

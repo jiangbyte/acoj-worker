@@ -21,6 +21,7 @@ def test_build_sandbox_runtime_config(monkeypatch):
         monkeypatch,
         sandbox_enable_namespaces=True,
         sandbox_rootfs_path="/srv/rootfs",
+        sandbox_bind_system_paths=True,
         sandbox_enable_cgroup=True,
         sandbox_cgroup_version="v2",
         sandbox_cgroup_base_path="/sys/fs/cgroup/acoj",
@@ -31,9 +32,42 @@ def test_build_sandbox_runtime_config(monkeypatch):
 
     assert isolation.enable_namespaces is True
     assert isolation.rootfs_path == "/srv/rootfs"
+    assert isolation.use_pivot_root is True
+    sources = {m.source for m in isolation.bind_mounts}
+    assert "/usr" in sources
+    assert "/etc" in sources
+    assert "/bin" not in sources  # usr-merge symlink inside rootfs, not a bind
+    assert all(m.read_only for m in isolation.bind_mounts if m.source != "/proc")
     assert cgroup.enabled is True
     assert cgroup.version == "v2"
     assert cgroup.base_path == "/sys/fs/cgroup/acoj"
+
+
+def test_build_isolation_skips_system_binds_when_disabled(monkeypatch):
+    _patch_judge(
+        monkeypatch,
+        sandbox_enable_namespaces=True,
+        sandbox_rootfs_path="/srv/rootfs",
+        sandbox_bind_system_paths=False,
+    )
+
+    isolation = build_isolation_config()
+
+    assert isolation.rootfs_path == "/srv/rootfs"
+    assert isolation.bind_mounts == []
+
+
+def test_build_isolation_skips_system_binds_without_rootfs(monkeypatch):
+    _patch_judge(
+        monkeypatch,
+        sandbox_enable_namespaces=True,
+        sandbox_rootfs_path="",
+        sandbox_bind_system_paths=True,
+    )
+
+    isolation = build_isolation_config()
+
+    assert isolation.bind_mounts == []
 
 
 def test_create_sandbox_client_uses_capacity_settings(monkeypatch):

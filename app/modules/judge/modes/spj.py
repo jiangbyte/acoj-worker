@@ -24,6 +24,11 @@ from app.modules.judge.sandbox_config import (
     build_isolation_config,
     create_sandbox_client,
 )
+from app.modules.judge.metrics import (
+    compile_metrics_from_process,
+    reported_run_time_ms,
+    run_metrics_from_cases,
+)
 from app.modules.judge.scoring import error_verdict
 
 logger = logging.getLogger(__name__)
@@ -64,12 +69,17 @@ class SpecialJudgeMode(BaseJudgeMode):
         )
         program = None
         checker_program = None
+        compile_time_ms = 0
+        compile_memory_kb = 0
         try:
             program = client.prepare_source(
                 language=language_key,
                 source=source,
                 isolation=isolation,
                 cgroup=cgroup,
+            )
+            compile_time_ms, compile_memory_kb = compile_metrics_from_process(
+                program.compile
             )
             if not program.compiled:
                 return error_verdict(
@@ -112,7 +122,7 @@ class SpecialJudgeMode(BaseJudgeMode):
                 # 复用已编译的 checker
                 spj_result = client.run_testlib_checker(
                     checker_source=spj_cfg["source"],
-                    input=DataRef.from_data(tc.get("input_inline", "")),
+                    input=input_ref,
                     actual_output=DataRef.from_path(user_result.stdout_path),
                     expected_output=expected_ref or DataRef.from_data(""),
                     prepared_checker=checker_program,
@@ -131,7 +141,7 @@ class SpecialJudgeMode(BaseJudgeMode):
                     {
                         "case_no": tc["case_no"],
                         "result": "AC" if case_ac else "WA",
-                        "time_ms": user_result.run.cpu_time_ms,
+                        "time_ms": reported_run_time_ms(user_result.run),
                         "memory_kb": user_result.run.memory_bytes // 1024,
                         "points": points,
                         "stdout_preview": DataRef.from_path(
@@ -150,13 +160,16 @@ class SpecialJudgeMode(BaseJudgeMode):
             client.close()
             checker_client.close()
 
+        run_time_ms, run_memory_kb = run_metrics_from_cases(all_cases)
         return {
             "submission_id": submission_id,
             "status": "COMPLETED",
             "result": "AC" if all_ac else "WA",
             "score": total_score,
-            "time_ms": sum(c["time_ms"] for c in all_cases),
-            "memory_kb": max((c["memory_kb"] for c in all_cases), default=0),
+            "time_ms": run_time_ms,
+            "memory_kb": run_memory_kb,
+            "compile_time_ms": compile_time_ms,
+            "compile_memory_kb": compile_memory_kb,
             "compile_output": None,
             "compile_error": False,
             "cases": all_cases,

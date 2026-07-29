@@ -28,12 +28,19 @@ def _worker_command() -> list[str]:
         command.append("--without-mingle")
     if _env_bool("CELERY__WORKER_WITHOUT_GOSSIP", True):
         command.append("--without-gossip")
+    queues = _env("CELERY__WORKER_QUEUES", "judge,default")
+    hostname = _env("HOSTNAME", "") or "local"
+    nodename = _env("ACOJ_CELERY_NODENAME") or _env("CELERY_NODENAME") or f"judge@{hostname}"
     command.extend(
         [
+            "-n",
+            nodename,
             "--pool",
-            _env("CELERY__WORKER_POOL", "solo"),
+            _env("CELERY__WORKER_POOL", "threads"),
             "--concurrency",
-            _env("CELERY__WORKER_CONCURRENCY", "1"),
+            _env("CELERY__WORKER_CONCURRENCY", "8"),
+            "-Q",
+            queues,
             "--loglevel",
             _env("CELERY__WORKER_LOG_LEVEL", "INFO"),
         ]

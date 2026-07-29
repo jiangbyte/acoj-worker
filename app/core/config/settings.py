@@ -25,16 +25,6 @@ class AppSettings(BaseSettings):
     trusted_proxy_ips: list[str] = []
 
 
-class DatabaseSettings(BaseSettings):
-    url: str = "postgresql+asyncpg://postgres:postgres@127.0.0.1:5432/hei_fastapi"
-    echo: bool = False
-    pool_size: int = 10
-    max_overflow: int = 20
-    pool_timeout_seconds: float = 30.0
-    pool_recycle_seconds: int = 1800
-    pool_pre_ping: bool = True
-
-
 class AuditSettings(BaseSettings):
     operation_queue_size: int = 1000
     operation_shutdown_timeout_seconds: float = 5.0
@@ -108,16 +98,22 @@ class CorsSettings(BaseSettings):
 
 class CelerySettings(BaseSettings):
     broker_url: str = "amqp://guest:guest@127.0.0.1:5672//"
+    # Empty → use Redis URL as Celery result backend (cross-process AsyncResult).
+    result_backend: str = ""
     worker_log_level: str = "INFO"
     log_dir: str = "logs"
     log_file_max_mb: int = 100
     beat_log_level: str = "INFO"
-    worker_pool: str = "solo"
-    worker_concurrency: int = 1
+    worker_pool: str = "threads"
+    worker_concurrency: int = 8
     worker_without_mingle: bool = True
     worker_without_gossip: bool = True
     worker_remote_control_enabled: bool = False
     worker_cancel_long_running_tasks_on_connection_loss: bool = True
+    # Prefer JUDGE__WORKER_PREFETCH_MULTIPLIER; CELERY__ alias accepted for deploy envs.
+    worker_prefetch_multiplier: int = 1
+    # Comma-separated Celery queues; must include JUDGE__TASK_DEFAULT_QUEUE (judge).
+    worker_queues: str = "judge,default"
 
 
 class MQSettings(BaseSettings):
@@ -203,7 +199,6 @@ class ObservabilitySettings(BaseSettings):
     otlp_endpoint: str = ""
     sample_ratio: float = 1.0
     celery_observability_enabled: bool = False
-    db_observability_enabled: bool = False
     http_client_observability_enabled: bool = False
 
 
@@ -243,7 +238,6 @@ class Settings(BaseSettings):
     )
 
     app: AppSettings = Field(default_factory=AppSettings)
-    db: DatabaseSettings = Field(default_factory=DatabaseSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     redis: RedisSettings = Field(default_factory=RedisSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)

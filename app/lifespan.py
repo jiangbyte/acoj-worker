@@ -10,7 +10,6 @@ from app.platform.cache.redis import close_redis, init_redis
 from app.platform.config.apply import apply_all_config
 from app.platform.config.reader import config_reader
 from app.platform.config.sync import start_config_sync_listener, stop_config_sync_listener
-from app.platform.db.session import close_engine, init_engine
 from app.platform.events import emit
 from app.platform.http.client import close_http_client, init_http_client
 from app.platform.module import (
@@ -32,7 +31,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     module_specs = load_module_specs()
 
-    init_engine()
     await init_redis()
     await start_operation_audit_queue()
 
@@ -47,7 +45,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await init_http_client()
 
     await run_startup_hooks(module_specs)
-    await emit("on_db_ready")
+    await emit("on_config_loaded", config_reader=config_reader)
 
     try:
         yield
@@ -57,5 +55,4 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         await stop_operation_audit_queue()
         await close_http_client()
         await close_redis()
-        await close_engine()
         shutdown_tracing()

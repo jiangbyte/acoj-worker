@@ -169,6 +169,7 @@ activemq-data/
 # Environments
 .env
 .envrc
+!deploy/worker/.env
 .venv
 env/
 venv/
@@ -238,6 +239,11 @@ __marimo__/
 
 
 uploads
+
+# Packaged Docker image archives
+*.tar
+*.tar.gz
+acoj-worker-prod.tar.gz
 
 # Web local/reference files
 web1/ant-design-vue-pro/

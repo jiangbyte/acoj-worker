@@ -1,9 +1,8 @@
 from typing import Annotated
 
 from fastapi import Depends, Header, Request
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config.enums import AccountStatusEnum, AccountType
+from app.core.config.enums import AccountType
 from app.core.config.settings import settings
 from app.core.exceptions.business import AuthenticationError, AuthorizationError
 from app.core.network.client_ip import get_client_ip
@@ -12,9 +11,6 @@ from app.core.security.permission import PermissionChecker
 from app.core.security.permission_registry import ACCOUNT_TYPE_META_ATTR, PERMISSION_META_ATTR
 from app.core.security.session import SessionPayload, session_store
 from app.deps.context import account_id_ctx, account_type_ctx
-from app.deps.db import get_db_session
-from app.platform.interfaces import resolve
-from app.platform.interfaces.account_lookup import AccountLookupProtocol
 
 
 async def get_current_session(
@@ -29,13 +25,8 @@ async def get_current_session(
     if not session:
         raise AuthenticationError("Invalid or expired token")
 
-    # IP 绑定校验
     _validate_session_ip(request, session)
-
-    # User-Agent 绑定校验
     _validate_session_user_agent(request, session)
-
-    # 异步更新最后活跃时间（不阻塞调用链）
     _touch_session_background(token)
 
     account_id_ctx.set(session.account_id)
@@ -45,22 +36,11 @@ async def get_current_session(
 
 async def get_current_account(
     session: Annotated[SessionPayload, Depends(get_current_session)],
-    db: Annotated[AsyncSession, Depends(get_db_session)],
-):
+) -> SessionPayload:
+    """Account identity from Redis session (worker has no account DB)."""
     account_id_ctx.set(session.account_id)
     account_type_ctx.set(session.account_type)
-    from typing import cast
-
-    account = await cast(AccountLookupProtocol, resolve("account_lookup")).get_active_account_by_id(
-        db, session.account_id
-    )
-    if (
-        not account
-        or account.cancelled_at is not None
-        or account.account_status != AccountStatusEnum.ENABLED.value
-    ):
-        raise AuthenticationError("Account is inactive or missing")
-    return account
+    return session
 
 
 def require_account_type(*account_types: AccountType):

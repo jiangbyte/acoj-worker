@@ -36,6 +36,8 @@ def _build_failed_result(payload: dict, exc: Exception, t_start: float) -> dict:
         "score": 0.0,
         "time_ms": 0,
         "memory_kb": 0,
+        "compile_time_ms": 0,
+        "compile_memory_kb": 0,
         "compile_output": None,
         "compile_error": False,
         "cases": [],

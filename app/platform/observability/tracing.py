@@ -11,7 +11,7 @@ def tracing_enabled() -> bool:
     return settings.observability.enabled and settings.observability.tracing_enabled
 
 
-def init_tracing(app=None, engine=None) -> None:
+def init_tracing(app=None) -> None:
     global _tracing_initialized
     if _tracing_initialized or not tracing_enabled():
         return
@@ -20,7 +20,6 @@ def init_tracing(app=None, engine=None) -> None:
         from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
         from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
-        from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -47,8 +46,6 @@ def init_tracing(app=None, engine=None) -> None:
     trace.set_tracer_provider(provider)
     if app is not None:
         FastAPIInstrumentor.instrument_app(app)
-    if engine is not None and settings.observability.db_observability_enabled:
-        SQLAlchemyInstrumentor().instrument(engine=engine.sync_engine)
     if settings.observability.http_client_observability_enabled:
         HTTPXClientInstrumentor().instrument()
     _tracing_initialized = True

@@ -21,11 +21,12 @@ class JudgeSettings(BaseSettings):
     task_time_limit: int = 600
     task_acks_late: bool = True
     task_reject_on_worker_lost: bool = True
-    worker_prefetch_multiplier: int = 4
+    # Contest fairness: prefetch=1 avoids one slot hoarding many long/TLE tasks.
+    worker_prefetch_multiplier: int = 1
 
-    # Sandbox pool
-    sandbox_worker_pool_size: int = 16
-    sandbox_borrow_timeout_seconds: float = 0.25
+    # Sandbox pool — size must cover concurrency × standard_parallelism
+    sandbox_worker_pool_size: int = 32
+    sandbox_borrow_timeout_seconds: float = 0.05
     sandbox_max_queue_wait_seconds: float = 0.0
     sandbox_request_timeout_seconds: float = 120.0
     sandbox_queue_wait_warn_seconds: float = 0.5
@@ -38,6 +39,8 @@ class JudgeSettings(BaseSettings):
     sandbox_compilation_cache_ttl_seconds: int = 3600
     sandbox_enable_namespaces: bool = False
     sandbox_rootfs_path: str = ""
+    # When rootfs_path is set, RO-bind host toolchain paths into the rootfs.
+    sandbox_bind_system_paths: bool = True
     sandbox_isolate_network: bool = True
     sandbox_isolate_ipc: bool = True
     sandbox_isolate_uts: bool = True

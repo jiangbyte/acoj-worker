@@ -1,1 +1,1 @@
-"""判题 worker 模块 — 零数据库依赖，MQ 通信 + 共享存储读取 + sandbox 执行。"""
+"""判题 worker 模块 — Celery + 共享存储 + sandbox 执行。"""

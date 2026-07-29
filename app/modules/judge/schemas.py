@@ -61,19 +61,19 @@ class CaseResult(BaseModel):
 
 
 class JudgeResultOut(BaseModel):
-    """判题结果（Celery task 返回值）。"""
+    """判题结果（Celery task 返回值 / AsyncResult 协议体）。"""
     submission_id: str
     status: str = "COMPLETED"
     result: str | None = None
     score: float = 0.0
+    # 成绩用时/内存：仅用户程序运行测例（各点 time 之和、memory 取 max）
     time_ms: int = 0
     memory_kb: int = 0
+    # 编译阶段（不计入 time_ms / memory_kb）
+    compile_time_ms: int = 0
+    compile_memory_kb: int = 0
     compile_output: str | None = None
     compile_error: bool = False
     cases: list[CaseResult] = Field(default_factory=list)
     error: str | None = None
     wall_time_ms: int = 0
-
-    def to_mq_dict(self) -> dict:
-        """序列化为 MQ 兼容字典（与旧格式一致）。"""
-        return self.model_dump()

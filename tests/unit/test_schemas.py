@@ -132,14 +132,28 @@ def test_judge_result_out_defaults():
     assert r.status == "COMPLETED"
     assert r.result is None
     assert r.score == 0.0
+    assert r.time_ms == 0
+    assert r.memory_kb == 0
+    assert r.compile_time_ms == 0
+    assert r.compile_memory_kb == 0
     assert r.cases == []
 
 
-def test_judge_result_out_to_mq_dict():
-    """to_mq_dict 输出兼容旧格式。"""
-    r = JudgeResultOut(submission_id="test-8", result="AC", score=100.0)
-    d = r.to_mq_dict()
+def test_judge_result_out_model_dump():
+    """Celery 返回值协议体字段完整。"""
+    r = JudgeResultOut(
+        submission_id="test-8",
+        result="AC",
+        score=100.0,
+        time_ms=42,
+        memory_kb=4096,
+        compile_time_ms=300,
+        compile_memory_kb=65536,
+    )
+    d = r.model_dump()
     assert d["submission_id"] == "test-8"
     assert d["result"] == "AC"
     assert d["score"] == 100.0
+    assert d["time_ms"] == 42
+    assert d["compile_time_ms"] == 300
     assert "cases" in d

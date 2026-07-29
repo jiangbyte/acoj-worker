@@ -1,7 +1,9 @@
+from typing import Any
 from urllib.parse import urljoin
 
 import boto3
 from botocore.client import Config
+from botocore.exceptions import ClientError
 
 from app.platform.storage.config import StorageConfig
 from app.platform.storage.url import quote_object_name
@@ -43,6 +45,28 @@ class S3CompatibleStorage:
             ContentType=content_type,
         )
         return self.get_object_url(object_name)
+
+    def download_bytes(self, object_name: str) -> bytes:
+        response = self.client.get_object(Bucket=self.bucket, Key=object_name)
+        body = response["Body"]
+        try:
+            return body.read()
+        finally:
+            body.close()
+
+    def head_object(self, object_name: str) -> dict[str, Any] | None:
+        try:
+            response = self.client.head_object(Bucket=self.bucket, Key=object_name)
+        except ClientError as exc:
+            code = str(exc.response.get("Error", {}).get("Code", ""))
+            if code in {"404", "NoSuchKey", "NotFound"}:
+                return None
+            raise
+        etag = str(response.get("ETag") or "").strip('"')
+        return {
+            "etag": etag,
+            "content_length": int(response.get("ContentLength") or 0),
+        }
 
     def delete_object(self, object_name: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=object_name)

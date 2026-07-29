@@ -7,12 +7,11 @@
 """
 
 import logging
-import time as time_module
 
 from acoj_sandbox import SandboxClient, Status
 
-from app.modules.judge.case_builder import build_judge_cases, get_expected_text
-from app.modules.judge.checker import check_output
+from app.modules.judge.case_builder import build_judge_cases
+from app.modules.judge.checker import outputs_match
 from app.modules.judge.config import get_judge_settings
 from app.modules.judge.language_config import build_languages_config
 from app.modules.judge.modes.base import BaseJudgeMode
@@ -21,6 +20,11 @@ from app.modules.judge.sandbox_config import (
     build_cgroup_config,
     build_isolation_config,
     create_sandbox_client,
+)
+from app.modules.judge.metrics import (
+    compile_metrics_from_process,
+    reported_run_time_ms,
+    run_metrics_from_cases,
 )
 from app.modules.judge.scoring import aggregate_batches, error_verdict
 
@@ -45,6 +49,9 @@ class StandardMode(BaseJudgeMode):
         if not cases:
             return error_verdict(submission_id, "没有测试点数据")
 
+        has_batch = any(tc.get("batch_no") for tc in test_cases_data)
+        stop_on_first = not partial and not has_batch
+
         client = create_sandbox_client(
             languages=languages_config,
             client_cls=SandboxClient,
@@ -60,30 +67,28 @@ class StandardMode(BaseJudgeMode):
                 cases=cases,
                 isolation=isolation,
                 cgroup=cgroup,
-                stop_on_first_failure=False,
-                parallelism=min(parallelism, len(cases)),
+                stop_on_first_failure=stop_on_first,
+                parallelism=1 if stop_on_first else min(parallelism, len(cases)),
             )
 
             has_ce = batch_result.compile.status != Status.AC
-            has_batch = any(tc.get("batch_no") for tc in test_cases_data)
-            stop_on_first = not partial and not has_batch
 
             raw_case_results: list[dict] = []
             had_failure = False
 
             for i, case_result in enumerate(batch_result.cases):
+                tc_meta = test_cases_data[i] if i < len(test_cases_data) else {}
+                case_no = int(tc_meta.get("case_no") or (i + 1))
+
                 if stop_on_first and had_failure:
-                    raw_case_results.append(self._skipped_result(i + 1))
+                    raw_case_results.append(self._skipped_result(case_no))
                     continue
 
-                tc_meta = test_cases_data[i] if i < len(test_cases_data) else {}
                 sandbox_status = case_result.status
                 run_ok = sandbox_status == Status.AC
-
-                expected_text = get_expected_text(case_result, tc_meta)
-                output_match = run_ok and (
-                    not expected_text
-                    or check_output(case_result.actual_output.preview_text, expected_text)
+                output_match = run_ok and outputs_match(
+                    case_result.actual_output,
+                    case_result.expected_output,
                 )
                 oj_result = (
                     "AC"
@@ -96,15 +101,22 @@ class StandardMode(BaseJudgeMode):
 
                 raw_case_results.append(
                     {
-                        "case_no": i + 1,
+                        "case_no": case_no,
                         "result": oj_result,
-                        "time_ms": case_result.result.run.cpu_time_ms,
+                        "time_ms": reported_run_time_ms(case_result.result.run),
                         "memory_kb": case_result.result.run.memory_bytes // 1024,
                         "points": tc_meta.get("points", 0),
                         "stdout_preview": case_result.actual_output.preview_text,
                         "stderr_preview": case_result.stderr.preview_text,
                     }
                 )
+
+            # Sandbox may stop early; pad SKIPPED for remaining ACM cases.
+            if stop_on_first and had_failure and len(raw_case_results) < len(test_cases_data):
+                for j in range(len(raw_case_results), len(test_cases_data)):
+                    tc_meta = test_cases_data[j]
+                    case_no = int(tc_meta.get("case_no") or (j + 1))
+                    raw_case_results.append(self._skipped_result(case_no))
 
             if has_batch:
                 case_results, score = aggregate_batches(raw_case_results, test_cases_data)
@@ -121,13 +133,19 @@ class StandardMode(BaseJudgeMode):
             else:
                 overall_result = compute_overall_result(False, case_results)
 
+            run_time_ms, run_memory_kb = run_metrics_from_cases(case_results)
+            compile_time_ms, compile_memory_kb = compile_metrics_from_process(
+                batch_result.compile
+            )
             return {
                 "submission_id": submission_id,
                 "status": "COMPLETED",
                 "result": overall_result,
                 "score": score,
-                "time_ms": batch_result.total_cpu_time_ms,
-                "memory_kb": batch_result.peak_memory_bytes // 1024,
+                "time_ms": run_time_ms,
+                "memory_kb": run_memory_kb,
+                "compile_time_ms": compile_time_ms,
+                "compile_memory_kb": compile_memory_kb,
                 "compile_output": batch_result.compile.message or batch_result.message,
                 "compile_error": has_ce,
                 "cases": case_results,

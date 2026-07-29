@@ -8,11 +8,12 @@ __pycache__/
 .mypy_cache/
 .coverage
 htmlcov/
+.env
 .env.*
-!.env
+!.env.example
+!.env.production.example
 storage/
 tests/
-migrations/
 web/
 node_modules/
 dist/

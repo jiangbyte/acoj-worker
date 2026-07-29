@@ -278,20 +278,18 @@ print(len(x))
 
 
 def test_standard_ole() -> bool:
-    """STANDARD: 超输出 → OLE / TLE"""
+    """STANDARD: 超输出 → OLE（显式小 output_limit_bytes，避免先被 wall TLE）"""
     sid = f"v-std-ole-{uuid.uuid4().hex[:6]}"
     payload = build_payload(sid, "STANDARD", SOURCE_CPP_OLE, LANG_CPP17, [{
         "case_no": 1, "points": 100.0,
-        "time_limit_ms": 1000, "memory_limit_kb": 262144,
+        "time_limit_ms": 5000, "memory_limit_kb": 262144,
+        "output_limit_bytes": 1024,
         "input_inline": "", "output_inline": "",
     }])
-    result = send_and_await(sid, payload, timeout=10.0)
+    result = send_and_await(sid, payload, timeout=30.0)
     actual = result.get("result")
-    ok = actual in ("OLE", "TLE")
-    if not ok and result.get("status") != "COMPLETED":
-        print(f"  [SKIP] STANDARD OLE: result={actual}")
-        return True
-    print(f"  [{'PASS' if ok else 'FAIL'}] STANDARD OLE: result={actual} (expected OLE/TLE)")
+    ok = actual == "OLE"
+    print(f"  [{'PASS' if ok else 'FAIL'}] STANDARD OLE: result={actual} (expected OLE)")
     return ok
 
 

@@ -17,7 +17,6 @@ from app.middleware.operation_audit import OperationAuditMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.security_headers import SecurityHeadersMiddleware
 from app.middleware.trace import TraceMiddleware
-from app.platform.db.session import engine
 from app.platform.module import load_module_specs
 from app.platform.module.services import register_services
 from app.platform.observability.manager import setup_observability
@@ -52,7 +51,7 @@ def create_app() -> FastAPI:
     add_cors(app)
     register_exception_handlers(app)
     customize_openapi_error_responses(app)
-    setup_observability(app, engine=engine)
+    setup_observability(app)
 
     @app.get("/", tags=["health"], response_model=RootHealthResponse)
     async def root() -> RootHealthResponse:

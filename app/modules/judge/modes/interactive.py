@@ -32,6 +32,11 @@ from app.modules.judge.sandbox_config import (
     build_isolation_config,
     create_sandbox_client,
 )
+from app.modules.judge.metrics import (
+    compile_metrics_from_process,
+    reported_run_time_ms,
+    run_metrics_from_cases,
+)
 from app.modules.judge.scoring import error_verdict
 
 logger = logging.getLogger(__name__)
@@ -67,6 +72,8 @@ class InteractiveMode(BaseJudgeMode):
         all_ac = True
         total_score = 0.0
         per_case_points = problem["points"] / max(len(test_cases_data), 1)
+        compile_time_ms = 0
+        compile_memory_kb = 0
 
         for tc in test_cases_data:
             input_ref = resolve_input_ref(tc)
@@ -76,17 +83,25 @@ class InteractiveMode(BaseJudgeMode):
                 memory_bytes=(tc.get("memory_limit_kb") or problem["memory_limit_kb"])
                 * 1024,
                 processes=256,
+                output_bytes=int(
+                    tc.get("output_limit_bytes")
+                    or problem.get("output_limit_bytes")
+                    or (8 * 1024 * 1024)
+                ),
             )
 
             work_dir = Path(tempfile.mkdtemp(prefix="acoj-interactive-"))
             input_file = work_dir / "input.txt"
-            input_data = (
-                input_ref.data if isinstance(input_ref.data, (str, bytes)) else ""
-            )
-            if isinstance(input_data, bytes):
-                input_file.write_bytes(input_data)
+            if input_ref.path:
+                shutil.copyfile(input_ref.path, input_file)
             else:
-                input_file.write_text(input_data, encoding="utf-8")
+                input_data = (
+                    input_ref.data if isinstance(input_ref.data, (str, bytes)) else ""
+                )
+                if isinstance(input_data, bytes):
+                    input_file.write_bytes(input_data)
+                else:
+                    input_file.write_text(input_data or "", encoding="utf-8")
 
             fifo_AB = work_dir / "user_to_interactor.fifo"
             fifo_BA = work_dir / "interactor_to_user.fifo"
@@ -121,6 +136,12 @@ class InteractiveMode(BaseJudgeMode):
                         isolation=isolation,
                         cgroup=cgroup,
                     )
+                    ct, cm = compile_metrics_from_process(user_program.compile)
+                    # 多测例时编译缓存命中耗时近 0；保留首次非零峰值
+                    if ct > compile_time_ms:
+                        compile_time_ms = ct
+                    if cm > compile_memory_kb:
+                        compile_memory_kb = cm
                     if not user_program.compiled:
                         all_cases.append(
                             {
@@ -300,7 +321,9 @@ class InteractiveMode(BaseJudgeMode):
                 else:
                     all_ac = False
 
-                time_ms = user_result.run.cpu_time_ms if user_result else 0
+                time_ms = (
+                    reported_run_time_ms(user_result.run) if user_result else 0
+                )
                 mem_kb = user_result.run.memory_bytes // 1024 if user_result else 0
 
                 all_cases.append(
@@ -341,13 +364,16 @@ class InteractiveMode(BaseJudgeMode):
         ]
         overall_result = "AC" if all_ac else (non_ac[0] if non_ac else "WA")
 
+        run_time_ms, run_memory_kb = run_metrics_from_cases(all_cases)
         return {
             "submission_id": submission_id,
             "status": "COMPLETED",
             "result": overall_result,
             "score": total_score,
-            "time_ms": sum(c["time_ms"] for c in all_cases),
-            "memory_kb": max((c["memory_kb"] for c in all_cases), default=0),
+            "time_ms": run_time_ms,
+            "memory_kb": run_memory_kb,
+            "compile_time_ms": compile_time_ms,
+            "compile_memory_kb": compile_memory_kb,
             "compile_output": None,
             "compile_error": False,
             "cases": all_cases,

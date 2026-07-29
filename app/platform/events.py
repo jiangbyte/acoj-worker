@@ -1,9 +1,8 @@
 """框架事件总线 — 模块订阅生命周期事件，框架 emit。
 
 预定义事件:
-  - on_config_loaded(config_reader)     -- sys_config 加载完成后
+  - on_config_loaded(config_reader)     -- 配置快照就绪后
   - on_storage_configured               -- 存储配置应用后
-  - on_db_ready                         -- 数据库就绪后
   - on_permissions_synced(app)          -- 权限同步完成后
 """
 

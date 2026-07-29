@@ -1,8 +1,9 @@
 """Sandbox runtime configuration shared by judge modes."""
 
 import logging
+from pathlib import Path
 
-from acoj_sandbox import CgroupConfig, IsolationConfig, SandboxClient
+from acoj_sandbox import BindMount, CgroupConfig, IsolationConfig, SandboxClient
 
 from app.core.config.settings import settings
 from app.modules.judge.config import get_judge_settings
@@ -12,18 +13,43 @@ _capacity_warning_logged = False
 _production_warning_logged = False
 _metrics_callback_registered = False
 
+# Debian usr-merge: rootfs uses bin/lib/lib64 -> usr/* symlinks; only bind real trees.
+_SYSTEM_BIND_CANDIDATES = ("/usr", "/etc", "/proc")
+
+
+def _system_bind_mounts() -> list[BindMount]:
+    mounts: list[BindMount] = []
+    for path in _SYSTEM_BIND_CANDIDATES:
+        if Path(path).exists():
+            # /proc must be writable for some kernel interfaces; toolchains need it.
+            read_only = path != "/proc"
+            mounts.append(
+                BindMount(source=path, target=path, read_only=read_only, recursive=True)
+            )
+    return mounts
+
 
 def build_isolation_config() -> IsolationConfig:
+    """构建隔离配置。
+
+    namespaces 关闭时（本机/开发默认），强制关闭依赖 mount/net namespace 的选项，
+    避免 acosandbox worker 模式下 C++ 等编译莫名失败。
+    """
     cfg = get_judge_settings()
+    enable_ns = cfg.sandbox_enable_namespaces
+    bind_mounts: list[BindMount] = []
+    if cfg.sandbox_rootfs_path and cfg.sandbox_bind_system_paths:
+        bind_mounts = _system_bind_mounts()
     return IsolationConfig(
-        enable_namespaces=cfg.sandbox_enable_namespaces,
-        isolate_network=cfg.sandbox_isolate_network,
-        isolate_ipc=cfg.sandbox_isolate_ipc,
-        isolate_uts=cfg.sandbox_isolate_uts,
-        private_mounts=cfg.sandbox_private_mounts,
+        enable_namespaces=enable_ns,
+        isolate_network=cfg.sandbox_isolate_network if enable_ns else False,
+        isolate_ipc=cfg.sandbox_isolate_ipc if enable_ns else False,
+        isolate_uts=cfg.sandbox_isolate_uts if enable_ns else False,
+        private_mounts=cfg.sandbox_private_mounts if enable_ns else False,
         rootfs_path=cfg.sandbox_rootfs_path,
-        use_pivot_root=cfg.sandbox_use_pivot_root,
+        use_pivot_root=cfg.sandbox_use_pivot_root if enable_ns else False,
         bind_workspace=cfg.sandbox_bind_workspace,
+        bind_mounts=bind_mounts,
     )
 
 

@@ -5,8 +5,7 @@
   input_file + LocalStorage → get_path() 直读
   input_file + Remote → file_cache.resolve_or_download() 缓存层处理
 
-文件生命周期由 file_cache 管理（LRU + TTL + ETag 版本校验），
-不再有全局临时文件列表和 per-judge 清理。
+文件生命周期由 file_cache 管理（LRU + TTL + ETag 版本校验）。
 """
 
 import logging
@@ -50,8 +49,7 @@ def resolve_input_ref(test_case: dict) -> DataRef:
                 )
                 raise RuntimeError(f"测试数据文件 hash 不匹配: {input_file}")
             return ref
-        if input_file:
-            logger.warning("输入文件不存在: %s", input_file)
+        raise RuntimeError(f"测试数据输入文件不存在或无法下载: {input_file}")
 
     return DataRef.from_data(test_case.get("input_inline", ""))
 
@@ -74,8 +72,7 @@ def resolve_output_ref(test_case: dict) -> DataRef | None:
                 )
                 raise RuntimeError(f"测试数据文件 hash 不匹配: {output_file}")
             return ref
-        if output_file:
-            logger.warning("输出文件不存在: %s", output_file)
+        raise RuntimeError(f"测试数据输出文件不存在或无法下载: {output_file}")
 
     output_inline = test_case.get("output_inline")
     if output_inline is not None:

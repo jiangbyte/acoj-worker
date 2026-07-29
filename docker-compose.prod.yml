@@ -1,0 +1,56 @@
+# Unified acoj-worker image — roles via APP__PROCESS_ROLE / command.
+#
+# Build (from this repo; sandbox is a sibling checkout):
+#   docker build --build-context sandbox=../acoj-sandbox -t acoj-worker:prod .
+#
+# Run:
+#   cp .env.production.example .env.production   # edit secrets
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d
+#   docker compose -f docker-compose.prod.yml --env-file .env.production up -d --scale worker=4
+
+services:
+  api:
+    IMAGE="${ACOJ_WORKER_IMAGE:-registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.1}"
+    command: ["api"]
+    env_file:
+      - ${ACOJ_ENV_FILE:-.env.production}
+    environment:
+      APP__PROCESS_ROLE: api
+      APP__HOST: 0.0.0.0
+      CELERY__AUTO_START_ENABLED: "false"
+    ports:
+      - "${ACOJ_API_PORT:-8000}:8000"
+    volumes:
+      - worker_storage:/app/storage
+    restart: unless-stopped
+
+  beat:
+    IMAGE="${ACOJ_WORKER_IMAGE:-registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.1}"
+    command: ["beat"]
+    env_file:
+      - ${ACOJ_ENV_FILE:-.env.production}
+    environment:
+      APP__PROCESS_ROLE: beat
+      CELERY__AUTO_START_ENABLED: "false"
+    restart: unless-stopped
+    # Keep a single beat replica (RedBeat lock is backup only).
+
+  worker:
+    IMAGE="${ACOJ_WORKER_IMAGE:-registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.1}"
+    command: ["worker"]
+    env_file:
+      - ${ACOJ_ENV_FILE:-.env.production}
+    environment:
+      APP__PROCESS_ROLE: worker
+      CELERY__AUTO_START_ENABLED: "false"
+    privileged: true
+    cgroup: host
+    volumes:
+      - worker_storage:/app/storage
+      - worker_judge_cache:/app/storage/judge-cache
+    restart: unless-stopped
+    # docker compose up --scale worker=N  (HOSTNAME differs per container → Celery -n)
+
+volumes:
+  worker_storage:
+  worker_judge_cache:

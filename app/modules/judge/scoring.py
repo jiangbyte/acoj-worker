@@ -103,6 +103,8 @@ def error_verdict(submission_id: str, msg: str) -> dict:
         "score": 0.0,
         "time_ms": 0,
         "memory_kb": 0,
+        "compile_time_ms": 0,
+        "compile_memory_kb": 0,
         "compile_output": msg,
         "compile_error": False,
         "cases": [],

@@ -1,8 +1,9 @@
-"""判题测试工具 — 全程无 pika。通过 Celery 发送判题，通过 AsyncResult.get() 等待结果。"""
+"""判题测试工具 — 经 Celery/RabbitMQ 发送，经 Redis result backend AsyncResult.get() 取回结果。"""
 
 import json
 import os
 import sys
+import time
 import uuid
 from typing import Any
 
@@ -44,10 +45,33 @@ def wait_result(
     """等待之前通过 send_only() 发出的判题结果。"""
     if label:
         print(f"\n[→] 等待结果: {label}")
-    try:
-        response = result.get(timeout=timeout)
-    except Exception as exc:
-        response = {"error": str(exc)}
+    response: dict
+    last_exc: Exception | None = None
+    # Concurrent AsyncResult.get() against Redis backend can hit protocol framing
+    # errors; retry with a fresh handle / short backoff.
+    deadline = time.time() + timeout
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            response = {"error": str(last_exc) if last_exc else "timeout"}
+            break
+        try:
+            response = result.get(timeout=max(0.1, remaining))
+            break
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            if "Protocol Error" in msg or "ConnectionError" in type(exc).__name__:
+                time.sleep(0.05)
+                try:
+                    from app.platform.tasks.celery_app import celery_app
+
+                    result = celery_app.AsyncResult(result.id)
+                except Exception:
+                    pass
+                continue
+            response = {"error": msg}
+            break
     if label:
         print(f"[←] 结果: {response.get('result', '?')}")
     return response

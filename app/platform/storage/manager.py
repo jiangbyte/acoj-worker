@@ -22,7 +22,7 @@ def get_storage(
     provider: StorageProvider | str | None = None,
     allow_settings_fallback: bool = True,
 ):
-    """Return a storage client for a cached DB storage config."""
+    """Return a storage client (Settings / STORAGE__* when no in-memory config)."""
     config = resolve_storage_config(
         config_id=config_id,
         provider=provider,

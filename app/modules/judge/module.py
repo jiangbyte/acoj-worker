@@ -1,4 +1,4 @@
-"""Judge worker module — Celery tasks only, no HTTP routes."""
+"""Judge worker module — Celery tasks for judge.execute."""
 
 from app.platform.module import ModuleSpec
 
