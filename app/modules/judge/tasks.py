@@ -2,10 +2,10 @@
 
 import logging
 
-from app.platform.tasks.celery_app import celery_app
-from app.platform.tasks.base import BaseTask
-
+import app.modules.judge.celery_setup  # noqa: F401  # apply judge queue/timeouts
 from app.modules.judge.orchestrator import judge as _judge
+from app.platform.tasks.base import BaseTask
+from app.platform.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 

@@ -1,3 +1,3 @@
-from app.platform.module import build_api_router, load_module_specs
+from app.platform.module import get_api_router
 
-router = build_api_router(load_module_specs())
+router = get_api_router()

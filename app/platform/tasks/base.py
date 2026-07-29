@@ -7,7 +7,7 @@ from app.platform.observability.metrics import track_celery_task
 
 
 class BaseTask(Task):
-    autoretry_for = (ConnectionError, TimeoutError, OSError)
+    autoretry_for = (Exception,)
     retry_backoff = True
     retry_kwargs = {"max_retries": 3}
 

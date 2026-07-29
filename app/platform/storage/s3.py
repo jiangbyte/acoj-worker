@@ -3,15 +3,16 @@ from urllib.parse import urljoin
 import boto3
 from botocore.client import Config
 
-from app.core.config.settings import settings
+from app.platform.storage.config import StorageConfig
 from app.platform.storage.url import quote_object_name
 
 
 class S3CompatibleStorage:
-    def __init__(self, *, force_path_style: bool = False) -> None:
-        self.bucket = settings.storage.bucket
-        endpoint = settings.storage.endpoint.rstrip("/")
-        scheme = "https" if settings.storage.use_ssl else "http"
+    def __init__(self, config: StorageConfig, *, force_path_style: bool = False) -> None:
+        self.config = config
+        self.bucket = config.bucket
+        endpoint = config.endpoint.rstrip("/")
+        scheme = "https" if config.use_ssl else "http"
         if endpoint.startswith("http://") or endpoint.startswith("https://"):
             endpoint_url = endpoint
         else:
@@ -19,43 +20,36 @@ class S3CompatibleStorage:
         config_kwargs = {"signature_version": "s3v4"}
         if force_path_style:
             config_kwargs["s3"] = {"addressing_style": "path"}
-        config = Config(**config_kwargs)
+        client_config = Config(**config_kwargs)
         self.client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
-            aws_access_key_id=settings.storage.access_key,
-            aws_secret_access_key=settings.storage.secret_key,
-            region_name=settings.storage.region,
-            config=config,
+            aws_access_key_id=config.access_key,
+            aws_secret_access_key=config.secret_key,
+            region_name=config.region,
+            config=client_config,
         )
 
-    def upload_bytes(self, object_name: str, content: bytes, content_type: str = "application/octet-stream") -> str:
-        self.client.put_object(Bucket=self.bucket, Key=object_name, Body=content, ContentType=content_type)
+    def upload_bytes(
+        self,
+        object_name: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> str:
+        self.client.put_object(
+            Bucket=self.bucket,
+            Key=object_name,
+            Body=content,
+            ContentType=content_type,
+        )
         return self.get_object_url(object_name)
-
-    def download_bytes(self, object_name: str) -> bytes:
-        resp = self.client.get_object(Bucket=self.bucket, Key=object_name)
-        return resp["Body"].read()
-
-    def head_object(self, object_name: str) -> dict | None:
-        try:
-            resp = self.client.head_object(Bucket=self.bucket, Key=object_name)
-            return {
-                "etag": resp.get("ETag", "").strip('"'),
-                "size": resp.get("ContentLength", 0),
-                "last_modified": resp.get("LastModified"),
-            }
-        except Exception as e:
-            if hasattr(e, "response") and e.response.get("Error", {}).get("Code") == "404":
-                return None
-            raise
 
     def delete_object(self, object_name: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=object_name)
 
     def get_object_url(self, object_name: str) -> str:
-        if settings.storage.base_url:
-            return urljoin(settings.storage.base_url.rstrip("/") + "/", quote_object_name(object_name))
+        if self.config.base_url:
+            return urljoin(self.config.base_url.rstrip("/") + "/", quote_object_name(object_name))
         return self.get_presigned_url(object_name)
 
     def get_presigned_url(self, object_name: str) -> str:
@@ -63,7 +57,7 @@ class S3CompatibleStorage:
             self.client.generate_presigned_url(
                 "get_object",
                 Params={"Bucket": self.bucket, "Key": object_name},
-                ExpiresIn=settings.storage.presign_expire_seconds,
+                ExpiresIn=self.config.presign_expire_seconds,
             )
         )
 
@@ -73,5 +67,5 @@ class S3Storage(S3CompatibleStorage):
 
 
 class MinioStorage(S3CompatibleStorage):
-    def __init__(self) -> None:
-        super().__init__(force_path_style=True)
+    def __init__(self, config: StorageConfig) -> None:
+        super().__init__(config, force_path_style=True)

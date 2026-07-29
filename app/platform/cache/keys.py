@@ -26,8 +26,8 @@ def login_lock_ip_key(account_type: str, ip: str) -> str:
     return f"login:lock:ip:{account_type}:{ip}"
 
 
-def password_reset_token_key(account_type: str, email: str) -> str:
-    return f"password:reset:{account_type}:{email.strip().lower()}"
+def password_reset_token_key(token: str) -> str:
+    return f"password:reset:{token}"
 
 
 def captcha_key(captcha_id: str) -> str:

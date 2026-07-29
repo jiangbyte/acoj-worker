@@ -20,19 +20,17 @@ import uuid
 from contextlib import contextmanager
 from pathlib import Path
 
-from app.core.config.settings import PROJECT_ROOT, settings
+from app.core.config.settings import PROJECT_ROOT
+from app.modules.judge.config import get_judge_settings
 
 logger = logging.getLogger(__name__)
 
-# ── 配置 ──
+# ── 配置（懒加载：测试可直接覆盖模块级变量）──
 
-_cache_dir = Path(settings.storage.cache_dir)
-CACHE_ROOT = _cache_dir if _cache_dir.is_absolute() else PROJECT_ROOT / _cache_dir
-CACHE_ROOT = CACHE_ROOT.resolve()
-
-CACHE_ENABLED = settings.storage.cache_enabled
-CACHE_MAX_BYTES = settings.storage.cache_max_mb * 1024 * 1024
-CACHE_TTL_SECONDS = settings.storage.cache_ttl_seconds
+CACHE_ROOT: Path | None = None
+CACHE_ENABLED: bool | None = None
+CACHE_MAX_BYTES: int | None = None
+CACHE_TTL_SECONDS: int | None = None
 REVALIDATE_INTERVAL = 60  # 名称寻址 freshness 窗口（秒）
 TOUCH_COOLDOWN = 60       # meta last_accessed_at 更新冷却（秒）
 LRU_GRACE_PERIOD = 60     # LRU 不淘汰最近 N 秒内访问的文件
@@ -44,8 +42,24 @@ _KEY_LOCKS: dict[str, threading.RLock] = {}
 _KEY_LOCKS_LOCK = threading.Lock()
 
 
+def _cache_cfg():
+    """解析缓存配置到模块级变量（幂等，可被测试覆盖）。"""
+    global CACHE_ROOT, CACHE_ENABLED, CACHE_MAX_BYTES, CACHE_TTL_SECONDS
+    if CACHE_ROOT is not None and CACHE_ENABLED is not None:
+        return
+    cfg = get_judge_settings()
+    cache_dir = Path(cfg.cache_dir)
+    root = cache_dir if cache_dir.is_absolute() else PROJECT_ROOT / cache_dir
+    CACHE_ROOT = root.resolve()
+    CACHE_ENABLED = cfg.cache_enabled
+    CACHE_MAX_BYTES = cfg.cache_max_mb * 1024 * 1024
+    CACHE_TTL_SECONDS = cfg.cache_ttl_seconds
+
+
 def _ensure_cache_root():
     global _CACHE_INITIALIZED
+    _cache_cfg()
+    assert CACHE_ROOT is not None
     if _CACHE_INITIALIZED:
         return
     with _CACHE_INIT_LOCK:
@@ -89,10 +103,14 @@ def _cache_key(sha256: str, object_name: str) -> str:
 
 
 def _data_path(key: str) -> Path:
+    _cache_cfg()
+    assert CACHE_ROOT is not None
     return CACHE_ROOT / key[:2] / key
 
 
 def _meta_path(key: str) -> Path:
+    _cache_cfg()
+    assert CACHE_ROOT is not None
     return CACHE_ROOT / key[:2] / f"{key}.meta.json"
 
 
@@ -104,6 +122,7 @@ def resolve_or_download(object_name: str, sha256: str = "") -> Path | None:
 
     返回 None 表示远端文件不存在且无缓存可用（调用方应回退 input_inline）。
     """
+    _cache_cfg()
     if not CACHE_ENABLED:
         return _download_direct(object_name)
 
@@ -184,6 +203,7 @@ def _resolve_or_download_locked(object_name: str, sha256: str, key: str) -> Path
 
 def invalidate(object_name: str, sha256: str = ""):
     """强制删除缓存条目（供外部管理接口调用）。"""
+    _cache_cfg()
     if not CACHE_ENABLED:
         return
     key = _cache_key(sha256, object_name)
@@ -193,9 +213,11 @@ def invalidate(object_name: str, sha256: str = ""):
 
 def purge_expired():
     """清理所有超过 TTL 未访问的缓存文件。"""
+    _cache_cfg()
     if not CACHE_ENABLED:
         return
     _ensure_cache_root()
+    assert CACHE_ROOT is not None and CACHE_TTL_SECONDS is not None
     if not CACHE_ROOT.exists():
         return
     now = time.time()
@@ -340,6 +362,8 @@ def _key_from_meta_path(meta_file: Path) -> str | None:
 
 
 def _evict_lru_if_needed(new_size: int):
+    _cache_cfg()
+    assert CACHE_MAX_BYTES is not None
     total = _calculate_total_size()
     if total + new_size <= CACHE_MAX_BYTES:
         return
@@ -371,6 +395,8 @@ def _evict_lru(need_bytes: int):
 
 def _collect_stats() -> list[dict]:
     """扫描所有 meta 返回 [{key, size, last_accessed_at}, ...]。"""
+    _cache_cfg()
+    assert CACHE_ROOT is not None
     if not CACHE_ROOT.exists():
         return []
     entries = []
@@ -390,6 +416,8 @@ def _collect_stats() -> list[dict]:
 
 
 def _calculate_total_size() -> int:
+    _cache_cfg()
+    assert CACHE_ROOT is not None
     total = 0
     if not CACHE_ROOT.exists():
         return 0

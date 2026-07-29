@@ -41,8 +41,10 @@ API / test client
 - `app/modules/judge/sandbox_config.py`：从配置生成 sandbox isolation/cgroup/client。
 - `app/modules/judge/schemas.py`：判题输入/输出 Pydantic 模型。
 - `app/modules/judge/scoring.py`：IOI 子任务计分、依赖关系解析、错误评语。
-- `app/modules/judge/module.py`：ModuleSpec 声明（无路由、无模型、纯任务）。
-- `app/platform/tasks/celery_app.py`：Celery app、队列、prefetch、RedBeat、result backend 配置。
+- `app/modules/judge/module.py`：ModuleSpec 声明（config_model / startup_hooks / 纯任务）。
+- `app/modules/judge/config.py`：JudgeSettings（`JUDGE__*`），sandbox / 缓存 / 判题队列。
+- `app/modules/judge/celery_setup.py`：在任务加载时把队列、prefetch、超时应用到上游 celery_app。
+- `app/platform/tasks/celery_app.py`：上游 Celery app（broker / RedBeat / result backend），无判题业务配置。
 - `app/platform/tasks/redbeat_scheduler.py`：RedBeat 定时任务同步。
 - `app/platform/tasks/base.py`：基类 task。
 
@@ -52,7 +54,7 @@ API / test client
 - SPECIAL_JUDGE：用户程序和 checker 分别编译，checker per-case 复用。
 - INTERACTIVE：用户程序与 interactor 双向 FIFO 通信，异常路径快速释放 FIFO，避免等待十几秒。
 - 多语言：从任务 payload 的 `language` 字段生成 `acoj_sandbox.LanguagesConfig`。
-- 真实队列：RabbitMQ + Celery，任务默认进入 `judge` 队列。
+- 真实队列：RabbitMQ + Celery；`judge.celery_setup` 将默认队列设为 `judge`（不改框架 celery_app）。
 - sandbox worker pool：进程级复用 `acosandbox worker`，降低 subprocess 启动成本。
 - 编译缓存：由 `acoj-sandbox` 提供 content-addressed cache，worker 默认开启。
 - 隔离能力：可配置 namespaces、network/ipc/uts/mount isolation、cgroup v1/v2、rootfs。
@@ -112,8 +114,7 @@ CELERY__BROKER_URL=amqp://admin:123456@127.0.0.1:5672//
 
 ```bash
 gunicorn app.main:app -c gunicorn.conf.py           # 仅 API
-celery -A app.platform.tasks.celery_app:celery_app worker \
-  -Q judge \
+celery -A app.worker.main:celery_app worker \
   --pool threads \
   --concurrency 8 \
   --without-mingle \
@@ -121,10 +122,12 @@ celery -A app.platform.tasks.celery_app:celery_app worker \
   --loglevel INFO
 ```
 
+> 判题队列由 `JUDGE__TASK_DEFAULT_QUEUE`（默认 `judge`）在模块加载时配置；无需在框架层写死 `-Q judge`。若显式传 `-Q`，需与该配置一致。
+
 RedBeat 定时任务调度器：
 
 ```bash
-celery -A app.platform.tasks.celery_app:celery_app beat \
+celery -A app.worker.main:celery_app beat \
   --loglevel INFO \
   --scheduler redbeat.RedBeatScheduler
 ```
@@ -141,14 +144,23 @@ celery -A app.platform.tasks.celery_app:celery_app beat \
 | `CELERY__WORKER_LOG_LEVEL` | `INFO` | Celery worker 日志级别 |
 | `CELERY__BEAT_LOG_LEVEL` | `INFO` | Celery beat 日志级别 |
 | `CELERY__WORKER_POOL` | `threads` | worker pool 类型 |
-| `CELERY__WORKER_CONCURRENCY` | `4` | 单 worker 并行 task 数 |
-| `CELERY__WORKER_PREFETCH_MULTIPLIER` | `4` | 每个执行槽预取任务数 |
+| `CELERY__WORKER_CONCURRENCY` | `1` | 单 worker 并行 task 数 |
 | `CELERY__WORKER_REMOTE_CONTROL_ENABLED` | `false` | 是否启用 Celery remote control |
 | `CELERY__WORKER_CANCEL_LONG_RUNNING_TASKS_ON_CONNECTION_LOSS` | `true` | 连接丢失时是否取消长时间运行的任务 |
 
+### Judge Celery（模块配置）
+
+| 配置 | 默认值 | 说明 |
+|---|---:|---|
+| `JUDGE__TASK_DEFAULT_QUEUE` | `judge` | 默认消费队列 |
+| `JUDGE__TASK_DEFAULT_ROUTING_KEY` | `judge.default` | 默认 routing key |
+| `JUDGE__WORKER_PREFETCH_MULTIPLIER` | `4` | 每个执行槽预取任务数 |
+| `JUDGE__TASK_SOFT_TIME_LIMIT` | `300` | 软超时（秒） |
+| `JUDGE__TASK_TIME_LIMIT` | `600` | 硬超时（秒） |
+
 生产建议：
 
-- `worker_prefetch_multiplier` 默认 `4`，prefetch = concurrency × 4，适合大多数场景。
+- `JUDGE__WORKER_PREFETCH_MULTIPLIER` 默认 `4`，prefetch = concurrency × 4，适合大多数场景。
 - 长任务/TLE 占比极高、多 worker 水平扩展时对公平性敏感，可降到 `1`。
 - 多 worker 容器水平扩展通常比单容器无限提高 concurrency 更稳。
 
@@ -158,14 +170,14 @@ Celery result backend 使用 Redis（由 `REDIS__URL` 提供），通过 RedBeat
 
 | 配置 | 默认值 | 说明 |
 |---|---:|---|
-| `CELERY__SANDBOX_WORKER_POOL_SIZE` | `16` | 进程级 sandbox worker 池大小 |
-| `CELERY__SANDBOX_STANDARD_PARALLELISM` | `4` | STANDARD 单任务内多 case 并行度 |
-| `CELERY__SANDBOX_BORROW_TIMEOUT_SECONDS` | `0.25` | 满池时每次等待 slice |
-| `CELERY__SANDBOX_MAX_QUEUE_WAIT_SECONDS` | `0.0` | sandbox 借用总等待预算，`0` 表示不设总上限 |
-| `CELERY__SANDBOX_ALLOW_EMERGENCY_WORKER` | `false` | 满池时是否创建临时 worker |
-| `CELERY__SANDBOX_REQUEST_TIMEOUT_SECONDS` | `120.0` | 单次 sandbox worker 请求超时 |
-| `CELERY__SANDBOX_QUEUE_WAIT_WARN_SECONDS` | `0.5` | 借用等待超过该值时记录 warning |
-| `CELERY__SANDBOX_HEALTH_CHECK_TIMEOUT_SECONDS` | `1.0` | 健康检查超时 |
+| `JUDGE__SANDBOX_WORKER_POOL_SIZE` | `16` | 进程级 sandbox worker 池大小 |
+| `JUDGE__SANDBOX_STANDARD_PARALLELISM` | `4` | STANDARD 单任务内多 case 并行度 |
+| `JUDGE__SANDBOX_BORROW_TIMEOUT_SECONDS` | `0.25` | 满池时每次等待 slice |
+| `JUDGE__SANDBOX_MAX_QUEUE_WAIT_SECONDS` | `0.0` | sandbox 借用总等待预算，`0` 表示不设总上限 |
+| `JUDGE__SANDBOX_ALLOW_EMERGENCY_WORKER` | `false` | 满池时是否创建临时 worker |
+| `JUDGE__SANDBOX_REQUEST_TIMEOUT_SECONDS` | `120.0` | 单次 sandbox worker 请求超时 |
+| `JUDGE__SANDBOX_QUEUE_WAIT_WARN_SECONDS` | `0.5` | 借用等待超过该值时记录 warning |
+| `JUDGE__SANDBOX_HEALTH_CHECK_TIMEOUT_SECONDS` | `1.0` | 健康检查超时 |
 
 容量建议：
 
@@ -179,10 +191,10 @@ SANDBOX_WORKER_POOL_SIZE >= WORKER_CONCURRENCY * SANDBOX_STANDARD_PARALLELISM
 
 | 配置 | 默认值 | 说明 |
 |---|---:|---|
-| `CELERY__SANDBOX_COMPILATION_CACHE_ENABLED` | `true` | 是否启用 sandbox 编译缓存 |
-| `CELERY__SANDBOX_COMPILATION_CACHE_DIR` | `/tmp/acoj-ccache` | 缓存目录 |
-| `CELERY__SANDBOX_COMPILATION_CACHE_MAX_MB` | `512` | LRU 容量上限 |
-| `CELERY__SANDBOX_COMPILATION_CACHE_TTL_SECONDS` | `3600` | TTL |
+| `JUDGE__SANDBOX_COMPILATION_CACHE_ENABLED` | `true` | 是否启用 sandbox 编译缓存 |
+| `JUDGE__SANDBOX_COMPILATION_CACHE_DIR` | `/tmp/acoj-ccache` | 缓存目录 |
+| `JUDGE__SANDBOX_COMPILATION_CACHE_MAX_MB` | `512` | LRU 容量上限 |
+| `JUDGE__SANDBOX_COMPILATION_CACHE_TTL_SECONDS` | `3600` | TTL |
 
 缓存由 `acoj-sandbox` 管理。编译缓存只恢复目标编译产物，SPJ/INTERACTIVE 的共享 workspace 不会被缓存中的其他文件覆盖。
 
@@ -192,19 +204,19 @@ SANDBOX_WORKER_POOL_SIZE >= WORKER_CONCURRENCY * SANDBOX_STANDARD_PARALLELISM
 
 | 配置 | 默认值 | 说明 |
 |---|---:|---|
-| `CELERY__SANDBOX_ENABLE_NAMESPACES` | `false` | 是否启用 namespaces |
-| `CELERY__SANDBOX_ROOTFS_PATH` | 空 | rootfs 路径 |
-| `CELERY__SANDBOX_ISOLATE_NETWORK` | `true` | 网络 namespace |
-| `CELERY__SANDBOX_ISOLATE_IPC` | `true` | IPC namespace |
-| `CELERY__SANDBOX_ISOLATE_UTS` | `true` | UTS namespace |
-| `CELERY__SANDBOX_PRIVATE_MOUNTS` | `true` | private mount propagation |
-| `CELERY__SANDBOX_USE_PIVOT_ROOT` | `true` | 使用 pivot_root |
-| `CELERY__SANDBOX_BIND_WORKSPACE` | `true` | rootfs 模式下绑定 workspace |
-| `CELERY__SANDBOX_ENABLE_CGROUP` | `false` | 是否启用 cgroup |
-| `CELERY__SANDBOX_CGROUP_VERSION` | `auto` | `auto` / `v1` / `v2` |
-| `CELERY__SANDBOX_CGROUP_BASE_PATH` | `/sys/fs/cgroup/acoj-sandbox` | cgroup base path |
-| `CELERY__SANDBOX_CGROUP_V1_MEMORY_BASE_PATH` | 空 | v1 显式 memory controller 路径 |
-| `CELERY__SANDBOX_CGROUP_V1_PIDS_BASE_PATH` | 空 | v1 显式 pids controller 路径 |
+| `JUDGE__SANDBOX_ENABLE_NAMESPACES` | `false` | 是否启用 namespaces |
+| `JUDGE__SANDBOX_ROOTFS_PATH` | 空 | rootfs 路径 |
+| `JUDGE__SANDBOX_ISOLATE_NETWORK` | `true` | 网络 namespace |
+| `JUDGE__SANDBOX_ISOLATE_IPC` | `true` | IPC namespace |
+| `JUDGE__SANDBOX_ISOLATE_UTS` | `true` | UTS namespace |
+| `JUDGE__SANDBOX_PRIVATE_MOUNTS` | `true` | private mount propagation |
+| `JUDGE__SANDBOX_USE_PIVOT_ROOT` | `true` | 使用 pivot_root |
+| `JUDGE__SANDBOX_BIND_WORKSPACE` | `true` | rootfs 模式下绑定 workspace |
+| `JUDGE__SANDBOX_ENABLE_CGROUP` | `false` | 是否启用 cgroup |
+| `JUDGE__SANDBOX_CGROUP_VERSION` | `auto` | `auto` / `v1` / `v2` |
+| `JUDGE__SANDBOX_CGROUP_BASE_PATH` | `/sys/fs/cgroup/acoj-sandbox` | cgroup base path |
+| `JUDGE__SANDBOX_CGROUP_V1_MEMORY_BASE_PATH` | 空 | v1 显式 memory controller 路径 |
+| `JUDGE__SANDBOX_CGROUP_V1_PIDS_BASE_PATH` | 空 | v1 显式 pids controller 路径 |
 
 生产建议开启 namespaces 和 cgroup。Docker 中通常需要 `--privileged --cgroupns=host` 或经验证的最小 capability 集合。
 如果生产要收敛权限，需要逐项验证 capability、mount、cgroup 写权限和 namespace 创建能力。
@@ -213,10 +225,10 @@ SANDBOX_WORKER_POOL_SIZE >= WORKER_CONCURRENCY * SANDBOX_STANDARD_PARALLELISM
 
 | 配置 | 默认值 | 说明 |
 |---|---:|---|
-| `STORAGE__CACHE_ENABLED` | `true` | 是否启用判题测试数据文件缓存 |
-| `STORAGE__CACHE_DIR` | `storage/judge-cache` | 缓存目录 |
-| `STORAGE__CACHE_MAX_MB` | `512` | LRU 容量上限 |
-| `STORAGE__CACHE_TTL_SECONDS` | `604800`（7天） | TTL |
+| `JUDGE__CACHE_ENABLED` | `true` | 是否启用判题测试数据文件缓存 |
+| `JUDGE__CACHE_DIR` | `storage/judge-cache` | 缓存目录 |
+| `JUDGE__CACHE_MAX_MB` | `512` | LRU 容量上限 |
+| `JUDGE__CACHE_TTL_SECONDS` | `604800`（7天） | TTL |
 
 ## 判题任务 payload
 
@@ -339,7 +351,7 @@ python tests/test_all_judge_modes.py
 
 ```bash
 # 先启动 Celery worker
-celery -A app.platform.tasks.celery_app:celery_app worker -Q judge --pool threads --concurrency 4
+celery -A app.worker.main:celery_app worker --pool threads --concurrency 4
 
 # 另开终端运行基准测试
 PYTHONPATH=/path/to/acoj-sandbox/python:/path/to/acoj-worker \
@@ -407,24 +419,16 @@ Worker 容器示例（仅启动 Celery worker，不运行 API）：
 docker run -d --name acoj-worker-1 --env-file .env \
   --privileged --cgroupns=host \
   -e APP__DEBUG=false \
-  acoj-worker \
-  celery -A app.platform.tasks.celery_app:celery_app worker \
-    -Q judge \
-    --pool threads \
-    --concurrency 8 \
-    --without-mingle \
-    --without-gossip \
-    --loglevel INFO
+  -e APP__PROCESS_ROLE=worker \
+  acoj-worker
 ```
 
 Beat 容器（仅启动 RedBeat 调度器）：
 
 ```bash
 docker run -d --name acoj-beat --env-file .env \
-  acoj-worker \
-  celery -A app.platform.tasks.celery_app:celery_app beat \
-    --loglevel INFO \
-    --scheduler redbeat.RedBeatScheduler
+  -e APP__PROCESS_ROLE=beat \
+  acoj-worker
 ```
 
 单容器全量启动（API + Worker + Beat）：

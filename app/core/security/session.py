@@ -1,12 +1,16 @@
 import json
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
 from typing import TypedDict
+from datetime import UTC, datetime
 
 from app.core.config.enums import AccountType, DataScope
 from app.core.config.settings import settings
 from app.platform.cache.keys import login_account_tokens_key, login_token_key, login_tokens_key
 from app.platform.cache.redis import get_redis
+
+logger = logging.getLogger(__name__)
 
 
 class PermissionGrantPayload(TypedDict):
@@ -36,6 +40,8 @@ class SessionPayload:
     permission_grants: list[PermissionGrantPayload] = field(default_factory=list)
     client_ip: str | None = None
     user_agent: str | None = None
+    remember_me: bool = True
+    password_expired: bool = False
     device_label: str | None = None
     login_at: str | None = None
     last_active_at: str | None = None
@@ -64,7 +70,79 @@ class SessionStore:
             return None
         raw_text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
         data = json.loads(raw_text)
-        return SessionPayload(**data)
+        session = SessionPayload(**data)
+        session = self._check_idle_timeout(redis, session)
+        return session
+
+
+    async def touch(self, token: str) -> None:
+        """Async update last_active_at with sliding TTL."""
+        try:
+            redis = self._get_required_redis()
+            raw = await redis.get(login_token_key(token))
+            if not raw:
+                return
+            raw_text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+            data = json.loads(raw_text)
+            data["last_active_at"] = datetime.now(UTC).isoformat()
+            remember_me = data.get("remember_me", True)
+            ttl = (
+                settings.auth.token_ttl_seconds
+                if remember_me
+                else settings.auth.token_ttl_short_seconds
+            )
+            await redis.setex(login_token_key(token), ttl, json.dumps(data))
+        except Exception:
+            logger.debug("Failed to touch session %s", token[:8], exc_info=True)
+
+    async def list_account_sessions(
+        self,
+        account_type: str,
+        account_id: str,
+    ) -> list[SessionPayload]:
+        """Return all online sessions for an account, oldest first."""
+        tokens = await self.get_account_tokens(account_type, account_id)
+        sessions = await self.list_sessions_by_tokens(tokens)
+        sessions.sort(key=lambda s: _parse_datetime_or_epoch(s.login_at))
+        return sessions
+
+    async def prune_excess_sessions(
+        self,
+        account_type: str,
+        account_id: str,
+        max_sessions: int,
+    ) -> None:
+        """Remove oldest sessions when exceeding max_sessions."""
+        if max_sessions <= 0:
+            return
+        sessions = await self.list_account_sessions(account_type, account_id)
+        if len(sessions) <= max_sessions:
+            return
+        excess = sessions[:-max_sessions]
+        for session in excess:
+            await self.delete(session.token)
+        logger.info("Pruned %d excess sessions for %s/%s", len(excess), account_type, account_id)
+
+    def _check_idle_timeout(self, redis, session: SessionPayload) -> SessionPayload | None:
+        """Delete session if idle_timeout exceeded."""
+        idle_timeout = settings.auth.session_idle_timeout_seconds
+        if idle_timeout <= 0 or not session.last_active_at:
+            return session
+        last_active = _parse_datetime_or_epoch(session.last_active_at)
+        if (datetime.now(UTC) - last_active).total_seconds() > idle_timeout:
+            logger.info("Session %s idle timeout, deleting", session.token[:8])
+            key = login_token_key(session.token)
+            try:
+                redis.delete(key)
+            except TypeError:
+                pass
+            try:
+                redis.srem(login_tokens_key(), session.token)
+                redis.srem(login_account_tokens_key(str(session.account_type), session.account_id), session.token)
+            except TypeError:
+                pass
+            return None
+        return session
 
     async def get_account_tokens(self, account_type: str, account_id: str) -> list[str]:
         """读取指定账户当前在线 token 列表，用于授权变更后刷新会话权限。"""
@@ -281,6 +359,17 @@ class SessionStore:
         if redis is None:
             raise RuntimeError("Redis is required for session store")
         return redis
+
+
+def _parse_datetime_or_epoch(value: str | None) -> datetime:
+    """Parse ISO datetime string; return Unix epoch on failure."""
+    if not value:
+        return datetime.min.replace(tzinfo=UTC)
+    try:
+        dt = datetime.fromisoformat(value)
+        return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    except (ValueError, TypeError):
+        return datetime.min.replace(tzinfo=UTC)
 
 
 session_store = SessionStore()

@@ -1,36 +1,30 @@
 from pathlib import Path
 
-from app.core.config.settings import PROJECT_ROOT, settings
+from app.core.config.settings import PROJECT_ROOT
+from app.platform.storage.config import StorageConfig
 from app.platform.storage.url import build_file_access_url
 
 
 class LocalStorage:
-    def __init__(self, root: str = "./storage") -> None:
+    def __init__(self, config: StorageConfig | None = None, root: str = "./storage") -> None:
+        self.config = config
+        root = config.local_root if config is not None else root
         root_path = Path(root)
         self.root = root_path if root_path.is_absolute() else PROJECT_ROOT / root_path
         self.root = self.root.resolve()
         self.root.mkdir(parents=True, exist_ok=True)
 
-    def upload_bytes(self, object_name: str, content: bytes, content_type: str = "application/octet-stream") -> str:
+    def upload_bytes(
+        self,
+        object_name: str,
+        content: bytes,
+        content_type: str = "application/octet-stream",
+    ) -> str:
         _ = content_type
         target = self.get_path(object_name)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(content)
         return self.get_object_url(object_name)
-
-    def download_bytes(self, object_name: str) -> bytes:
-        return self.get_path(object_name).read_bytes()
-
-    def head_object(self, object_name: str) -> dict | None:
-        path = self.get_path(object_name)
-        if not path.exists():
-            return None
-        stat = path.stat()
-        return {
-            "etag": str(stat.st_mtime_ns),
-            "size": stat.st_size,
-            "last_modified": stat.st_mtime,
-        }
 
     def delete_object(self, object_name: str) -> None:
         target = self.get_path(object_name)
@@ -38,7 +32,13 @@ class LocalStorage:
             target.unlink()
 
     def get_object_url(self, object_name: str) -> str:
-        return build_file_access_url(object_name)
+        if self.config is None:
+            return build_file_access_url(object_name)
+        return build_file_access_url(
+            object_name,
+            base_url=self.config.base_url,
+            public_path=self.config.public_path,
+        )
 
     def get_presigned_url(self, object_name: str) -> str:
         return self.get_object_url(object_name)

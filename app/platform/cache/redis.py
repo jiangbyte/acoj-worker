@@ -9,7 +9,7 @@ async def init_redis() -> None:
     global redis_client
     if redis_client is not None:
         return
-    redis_client = Redis.from_url(settings.redis.url, decode_responses=False)
+    redis_client = Redis.from_url(settings.redis.url, decode_responses=False, max_connections=settings.redis.max_connections)
     await redis_client.ping()
 
 

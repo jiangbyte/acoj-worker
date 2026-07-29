@@ -3,6 +3,7 @@ import uuid
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 
+from app.core.network.client_ip import get_client_ip
 from app.deps.context import (
     client_ip_ctx,
     request_id_ctx,
@@ -21,7 +22,7 @@ class TraceMiddleware(BaseHTTPMiddleware):
         request_token = request_id_ctx.set(request_id)
         path_token = request_path_ctx.set(request.url.path)
         method_token = request_method_ctx.set(request.method)
-        ip_token = client_ip_ctx.set(_client_ip(request))
+        ip_token = client_ip_ctx.set(get_client_ip(request))
         user_agent_token = user_agent_ctx.set(request.headers.get("user-agent"))
         try:
             sync_trace_context()
@@ -36,10 +37,3 @@ class TraceMiddleware(BaseHTTPMiddleware):
             span_id_ctx.set(None)
         response.headers["X-Request-Id"] = request_id
         return response
-
-
-def _client_ip(request: Request) -> str | None:
-    forwarded_for = request.headers.get("x-forwarded-for")
-    if forwarded_for:
-        return forwarded_for.split(",", 1)[0].strip()
-    return request.client.host if request.client else None

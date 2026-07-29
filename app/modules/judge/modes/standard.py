@@ -11,9 +11,9 @@ import time as time_module
 
 from acoj_sandbox import SandboxClient, Status
 
-from app.core.config.settings import settings
 from app.modules.judge.case_builder import build_judge_cases, get_expected_text
 from app.modules.judge.checker import check_output
+from app.modules.judge.config import get_judge_settings
 from app.modules.judge.language_config import build_languages_config
 from app.modules.judge.modes.base import BaseJudgeMode
 from app.modules.judge.result_mapper import compute_overall_result, to_oj_result
@@ -53,7 +53,7 @@ class StandardMode(BaseJudgeMode):
         try:
             isolation = build_isolation_config()
             cgroup = build_cgroup_config()
-            parallelism = max(1, settings.celery.sandbox_standard_parallelism)
+            parallelism = max(1, get_judge_settings().sandbox_standard_parallelism)
             batch_result = client.run_cases(
                 language=language_key,
                 source=source,

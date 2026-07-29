@@ -15,7 +15,7 @@ def format_utc_iso8601(value: datetime) -> str:
         value = value.replace(tzinfo=UTC)
     else:
         value = value.astimezone(UTC)
-    return value.isoformat(timespec="seconds").replace("+00:00", "Z")
+    return value.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def serialize_datetime_value(value):

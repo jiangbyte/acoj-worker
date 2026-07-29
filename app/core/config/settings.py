@@ -1,5 +1,6 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Any
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -18,7 +19,10 @@ class AppSettings(BaseSettings):
     debug: bool = True
     workers: int = 1
     worker_max: int = 4
+    process_role: str = "all"
+    config_crypto_key: str = ""
     timezone: str = "Asia/Shanghai"
+    trusted_proxy_ips: list[str] = []
 
 
 class DatabaseSettings(BaseSettings):
@@ -37,18 +41,30 @@ class AuditSettings(BaseSettings):
 
 
 class RedisSettings(BaseSettings):
-    """Redis 配置，支持通过标准 URL 传递账号、密码、库编号等连接信息。"""
-
     url: str = "redis://localhost:6379/0"
+    max_connections: int = 1000
 
 
 class AuthSettings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore")
     token_name: str = "Authorization"
-    token_ttl_seconds: int = 60 * 60 * 24 * 30
-    refresh_ttl_seconds: int = 60 * 60 * 24 * 30
+    token_ttl_seconds: int = 60 * 60 * 4
+    refresh_ttl_seconds: int = 60 * 60 * 4
+    token_ttl_short_seconds: int = 60 * 60 * 2
+    admin_register_enabled: bool = False
+    portal_register_enabled: bool = True
+    login_failure_window_seconds: int = 15 * 60
+    login_account_max_failures: int = 5
+    login_ip_max_failures: int = 30
+    login_lock_seconds: int = 15 * 60
+    password_reset_token_ttl_seconds: int = 10 * 60
+    default_password: str = ""
     captcha_ttl_seconds: int = 5 * 60
     password_crypto_key_ttl_seconds: int = 10 * 60
+    session_idle_timeout_seconds: int = 0
+    session_bind_ip: bool = True
+    session_bind_user_agent: bool = False
+    max_concurrent_sessions: int = 5
+    password_expire_days: int = 90
 
 
 class MailSettings(BaseSettings):
@@ -60,67 +76,65 @@ class MailSettings(BaseSettings):
     from_name: str = "hei-fastapi"
     use_tls: bool = True
     timeout_seconds: float = 10.0
-    admin_password_reset_url: str = "http://localhost:5173/auth/forgot-password"
-    portal_password_reset_url: str = "http://localhost:5174/auth/reset-password"
+    password_reset_url: str = "http://localhost:5173/auth/forgot-password"
 
 
 class CorsSettings(BaseSettings):
     allow_origins: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5163",
+        "http://127.0.0.1:5163",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
     ]
     allow_credentials: bool = True
-    allow_methods: list[str] = ["*"]
-    allow_headers: list[str] = ["*"]
+    allow_methods: list[str] = [
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+    ]
+    allow_headers: list[str] = [
+        "Authorization",
+        "Content-Type",
+        "X-Request-Id",
+        "Accept",
+        "Origin",
+    ]
 
 
 class CelerySettings(BaseSettings):
-    model_config = SettingsConfigDict(extra="ignore")
     broker_url: str = "amqp://guest:guest@127.0.0.1:5672//"
-    result_backend: str = "rpc://"
     worker_log_level: str = "INFO"
+    log_dir: str = "logs"
+    log_file_max_mb: int = 100
     beat_log_level: str = "INFO"
-    worker_pool: str = "threads"
-    worker_concurrency: int = 4
-    worker_prefetch_multiplier: int = 4
+    worker_pool: str = "solo"
+    worker_concurrency: int = 1
     worker_without_mingle: bool = True
     worker_without_gossip: bool = True
     worker_remote_control_enabled: bool = False
     worker_cancel_long_running_tasks_on_connection_loss: bool = True
-    sandbox_worker_pool_size: int = 16
-    sandbox_borrow_timeout_seconds: float = 0.25
-    sandbox_max_queue_wait_seconds: float = 0.0
-    sandbox_request_timeout_seconds: float = 120.0
-    sandbox_queue_wait_warn_seconds: float = 0.5
-    sandbox_health_check_timeout_seconds: float = 1.0
-    sandbox_standard_parallelism: int = 4
-    sandbox_allow_emergency_worker: bool = False
-    sandbox_compilation_cache_enabled: bool = True
-    sandbox_compilation_cache_dir: str = "/tmp/acoj-ccache"
-    sandbox_compilation_cache_max_mb: int = 512
-    sandbox_compilation_cache_ttl_seconds: int = 3600
-    sandbox_enable_namespaces: bool = False
-    sandbox_rootfs_path: str = ""
-    sandbox_isolate_network: bool = True
-    sandbox_isolate_ipc: bool = True
-    sandbox_isolate_uts: bool = True
-    sandbox_private_mounts: bool = True
-    sandbox_use_pivot_root: bool = True
-    sandbox_bind_workspace: bool = True
-    sandbox_enable_cgroup: bool = False
-    sandbox_cgroup_version: str = "auto"
-    sandbox_cgroup_base_path: str = "/sys/fs/cgroup/acoj-sandbox"
-    sandbox_cgroup_v1_memory_base_path: str = ""
-    sandbox_cgroup_v1_pids_base_path: str = ""
+
+
+class MQSettings(BaseSettings):
+    enabled: bool = False
+    url: str = ""
+    reconnect_interval_seconds: float = 5.0
+    publish_exchange: str = ""
+    publish_exchange_type: str = "topic"
 
 
 class StorageSettings(BaseSettings):
-    provider: StorageProvider = StorageProvider.S3
-    bucket: str = "hei-fastapi"
-    endpoint: str = "http://127.0.0.1:9000"
-    access_key: str = "minioadmin"
-    secret_key: str = "minioadmin"
-    region: str = "us-east-1"
+    provider: StorageProvider = StorageProvider.LOCAL
+    bucket: str = ""
+    endpoint: str = ""
+    access_key: str = ""
+    secret_key: str = ""
+    region: str = ""
     use_ssl: bool = False
     presign_expire_seconds: int = 3600
     base_url: str = ""
@@ -161,11 +175,6 @@ class StorageSettings(BaseSettings):
     ]
     upload_category_max_length: int = 64
     public_upload_enabled: bool = False
-    # 文件缓存（worker judge 使用，避免重复从远端下载测试数据）
-    cache_enabled: bool = True
-    cache_dir: str = "storage/judge-cache"
-    cache_max_mb: int = 512
-    cache_ttl_seconds: int = 86400 * 7
 
 
 class IdGeneratorSettings(BaseSettings):
@@ -185,6 +194,8 @@ class ObservabilitySettings(BaseSettings):
     log_enabled: bool = True
     log_level: str = "INFO"
     log_json: bool = False
+    log_dir: str = "logs"
+    log_file_max_mb: int = 100
     metrics_enabled: bool = False
     metrics_path: str = "/metrics"
     tracing_enabled: bool = False
@@ -194,6 +205,34 @@ class ObservabilitySettings(BaseSettings):
     celery_observability_enabled: bool = False
     db_observability_enabled: bool = False
     http_client_observability_enabled: bool = False
+
+
+class AuditAlertSettings(BaseSettings):
+    enabled: bool = False
+    webhook_url: str = ""
+    webhook_secret: str = ""
+    analysis_interval_seconds: int = 300
+    alert_cooldown_seconds: int = 1800
+    rule_brute_force: bool = True
+    rule_unusual_hours: bool = True
+    rule_sensitive_ops: bool = True
+    rule_bulk_delete: bool = True
+    rule_ip_anomaly: bool = True
+    brute_force_threshold: int = 10
+    bulk_delete_threshold: int = 20
+    ip_anomaly_threshold: int = 3
+
+
+class PasswordPolicySettings(BaseSettings):
+    min_length: int = 8
+    max_length: int = 128
+    require_uppercase: bool = True
+    require_lowercase: bool = True
+    require_digit: bool = True
+    require_special: bool = True
+    expire_days: int = 90
+    history_check_count: int = 5
+    common_password_check: bool = True
 
 
 class Settings(BaseSettings):
@@ -211,10 +250,15 @@ class Settings(BaseSettings):
     mail: MailSettings = Field(default_factory=MailSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)
     celery: CelerySettings = Field(default_factory=CelerySettings)
+    mq: MQSettings = Field(default_factory=MQSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
+    password_policy: PasswordPolicySettings = Field(default_factory=PasswordPolicySettings)
+    audit_alert: AuditAlertSettings = Field(default_factory=AuditAlertSettings)
     id_generator: IdGeneratorSettings = Field(default_factory=IdGeneratorSettings)
     swagger: SwaggerSettings = Field(default_factory=SwaggerSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
+
+    module_configs: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 @lru_cache(maxsize=1)
