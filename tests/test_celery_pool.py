@@ -9,7 +9,7 @@
     python tests/test_celery_pool.py quick     # 快速（串行 20 + 并发 10 + TLE）
     python tests/test_celery_pool.py repeat    # 重复 3 轮全部测试（稳性验证）
 
-依赖：Celery worker + RabbitMQ 必须已运行。
+依赖：Celery worker + Redis broker 必须已运行。
 """
 
 import json

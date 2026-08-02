@@ -97,9 +97,12 @@ class CorsSettings(BaseSettings):
 
 
 class CelerySettings(BaseSettings):
-    broker_url: str = "amqp://guest:guest@127.0.0.1:5672//"
-    # Empty → use Redis URL as Celery result backend (cross-process AsyncResult).
+    # Dedicated Redis DB for broker (share with API). AMQP still works if set explicitly.
+    broker_url: str = "redis://127.0.0.1:6379/1"
+    # Empty → use Redis URL as Celery result backend (optional; API apply uses Celery link).
     result_backend: str = ""
+    # Must exceed task_time_limit so Redis broker does not redeliver mid-judge.
+    broker_visibility_timeout: int = 3600
     worker_log_level: str = "INFO"
     log_dir: str = "logs"
     log_file_max_mb: int = 100
@@ -112,16 +115,8 @@ class CelerySettings(BaseSettings):
     worker_cancel_long_running_tasks_on_connection_loss: bool = True
     # Prefer JUDGE__WORKER_PREFETCH_MULTIPLIER; CELERY__ alias accepted for deploy envs.
     worker_prefetch_multiplier: int = 1
-    # Comma-separated Celery queues; must include JUDGE__TASK_DEFAULT_QUEUE (judge).
-    worker_queues: str = "judge,default"
-
-
-class MQSettings(BaseSettings):
-    enabled: bool = False
-    url: str = ""
-    reconnect_interval_seconds: float = 5.0
-    publish_exchange: str = ""
-    publish_exchange_type: str = "topic"
+    # Only judge — never consume API apply queues (default/acoj_api).
+    worker_queues: str = "judge"
 
 
 class StorageSettings(BaseSettings):
@@ -244,7 +239,6 @@ class Settings(BaseSettings):
     mail: MailSettings = Field(default_factory=MailSettings)
     cors: CorsSettings = Field(default_factory=CorsSettings)
     celery: CelerySettings = Field(default_factory=CelerySettings)
-    mq: MQSettings = Field(default_factory=MQSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     password_policy: PasswordPolicySettings = Field(default_factory=PasswordPolicySettings)
     audit_alert: AuditAlertSettings = Field(default_factory=AuditAlertSettings)

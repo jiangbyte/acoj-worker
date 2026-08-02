@@ -4,7 +4,7 @@ set -eu
 ROLE="${1:-${HEI_PROCESS_ROLE:-${APP__PROCESS_ROLE:-all}}}"
 MINGLE_FLAG="--without-mingle"
 GOSSIP_FLAG="--without-gossip"
-WORKER_QUEUES="${CELERY__WORKER_QUEUES:-judge,default}"
+WORKER_QUEUES="${CELERY__WORKER_QUEUES:-judge}"
 
 if [ "${CELERY__WORKER_WITHOUT_MINGLE:-true}" = "false" ]; then
     MINGLE_FLAG=""

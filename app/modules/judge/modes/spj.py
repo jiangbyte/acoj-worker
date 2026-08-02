@@ -9,10 +9,20 @@ import time as time_module
 
 from acoj_sandbox import (
     DataRef,
+    JudgeLimits,
     SandboxClient,
     Status,
     LanguagesConfig,
+    bundled_testlib_header,
     testlib_checker_language,
+)
+
+_CHECKER_COMPILE_LIMITS = JudgeLimits(
+    cpu_time_ms=60000,
+    real_time_ms=120000,
+    memory_bytes=1024 * 1024 * 1024,
+    processes=256,
+    output_bytes=64 * 1024 * 1024,
 )
 
 from app.modules.judge.case_builder import build_judge_limits
@@ -84,20 +94,22 @@ class SpecialJudgeMode(BaseJudgeMode):
             if not program.compiled:
                 return error_verdict(
                     submission_id,
-                    f"用户程序编译失败: {program.compile.message}",
+                    f"用户程序编译失败: {_compile_failure_text(program)}",
                 )
 
-            # 编译 checker（一次，per-case 复用）
+            # 编译 checker（一次，per-case 复用）；注入捆绑的 testlib.h
             checker_program = checker_client.prepare_source(
                 language=checker_key,
                 source=spj_cfg["source"],
+                limits=_CHECKER_COMPILE_LIMITS,
                 isolation=isolation,
                 cgroup=cgroup,
+                extra_files={"testlib.h": bundled_testlib_header()},
             )
             if not checker_program.compiled:
                 return error_verdict(
                     submission_id,
-                    f"SPJ checker 编译失败: {checker_program.compile.message}",
+                    f"SPJ checker 编译失败: {_compile_failure_text(checker_program)}",
                 )
 
             all_cases: list[dict] = []
@@ -175,3 +187,13 @@ class SpecialJudgeMode(BaseJudgeMode):
             "cases": all_cases,
             "error": None,
         }
+
+
+def _compile_failure_text(program) -> str:
+    """Prefer compiler stderr over generic sandbox status text."""
+    result = getattr(program, "compile_result", None)
+    if result is not None:
+        text = (getattr(result, "compiler_output", None) or getattr(result, "message", None) or "").strip()
+        if text:
+            return text
+    return getattr(getattr(program, "compile", None), "message", None) or "compile failed"

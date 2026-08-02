@@ -7,24 +7,23 @@ ACOJ **判题 Worker**：经 Celery 消费 `judge.execute`，调用 `acoj-sandbo
 - 协议：[docs/judge-protocol.md](docs/judge-protocol.md)
 - 演示部署：[deploy/worker/](deploy/worker/)
 
-**运行时：** Redis、RabbitMQ；FILE 测例另配 MinIO（或 S3 兼容存储）。配置来自环境变量。
+**运行时：** Redis（缓存 `/0` + Celery broker `/1`）；FILE 测例另配 MinIO（或 S3 兼容存储）。配置来自环境变量。
 
 ## 原理
 
 ```text
-业务 API / 测试客户端
-  → celery send_task("judge.execute", queue="judge")
-  → RabbitMQ
-  → Celery worker
+业务 API
+  → send_task("judge.execute", queue="judge", link=apply@acoj_api)
+  → Redis broker
+  → Celery worker (-Q judge only)
        → JudgePayload 校验
        → STANDARD / SPECIAL_JUDGE / INTERACTIVE
        → SandboxClient + acosandbox
        → return JudgeResultOut
-  → Redis result backend
-  → AsyncResult(task_id).get()
+  → Celery link → API celery (acoj_api) 落库 + SSE
 ```
 
-- 队列：RabbitMQ；结果：Redis Celery backend。
+- Broker：Redis；API 通过 Celery `link` 落库（勿让 worker 消费 `default`/`acoj_api`）。
 - 用户源码字段：`source`。
 - FILE：`input_file` / `output_file` + sha256 → `STORAGE__*` 下载与本地缓存；失败时 `status=FAILED`。
 - 语言命令来自 payload；Java / Go 由 `language_config.py` 配置 `memory_limit_check_only` 与环境变量。
@@ -32,7 +31,7 @@ ACOJ **判题 Worker**：经 Celery 消费 `judge.execute`，调用 `acoj-sandbo
 
 ## 本地开发
 
-Python ≥ 3.11，以及 Redis、RabbitMQ（FILE 时再加对象存储）。
+Python ≥ 3.11，以及 Redis（FILE 时再加对象存储）。
 
 ```bash
 cp .env.example .env
@@ -43,7 +42,7 @@ ACOJ_SANDBOX_SKIP_NATIVE_BUILD=1 pip install -e ../acoj-sandbox
 
 python -m celery -A app.worker.main:celery_app worker \
   --without-mingle --without-gossip \
-  -Q judge,default --pool threads --concurrency 8 -n judge@dev
+  -Q judge --pool threads --concurrency 8 -n judge@dev
 ```
 
 本机 `.env` 默认关闭 namespaces/cgroup。Docker 生产使用 `--privileged --cgroupns=host`。
@@ -61,7 +60,7 @@ DOCKER_BUILDKIT=1 docker build \
 镜像：`acosandbox`、`acoj-sandbox`、g++ / python3 / OpenJDK 17 / go、`/opt/acoj-rootfs`（usr-merge）。默认 namespaces + cgroup，bind `/usr` `/etc` `/proc`。
 
 ```text
-registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.6
+registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.7
 ```
 
 | 角色 | 命令 | 说明 |
@@ -71,7 +70,7 @@ registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.6
 
 ```bash
 cd deploy/worker
-VERSION=0.1.6 ./run.sh
+VERSION=0.1.7 ./run.sh
 ```
 
 ```bash
@@ -82,15 +81,16 @@ docker run -d --name acoj-j1 --network host \
   -e ACOJ_SANDBOX_BINARY=/usr/local/bin/acosandbox \
   -e ACOJ_CELERY_NODENAME=judge@j1 \
   -e ID_GENERATOR__WORKER_ID=1 \
-  registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.6 worker
+  registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.7 worker
 ```
 
 ### 环境变量
 
 | 变量 | 说明 |
 |------|------|
-| `CELERY__BROKER_URL` | RabbitMQ；`@` → `%40`；vhost `/` → `.../%2F` |
-| `REDIS__URL` | 缓存与默认 result backend |
+| `CELERY__BROKER_URL` | Redis broker（建议独立 DB，如 `/1`）；密码 `@` → `%40` |
+| `CELERY__BROKER_VISIBILITY_TIMEOUT` | 须大于最长判题时间（默认 3600） |
+| `REDIS__URL` | 缓存与默认 result backend（建议 `/0`） |
 | `CELERY__WORKER_CONCURRENCY` | 与 `--cpus` 对齐 |
 | `JUDGE__WORKER_PREFETCH_MULTIPLIER` | 公平性 `1`；吞吐可更大 |
 | `JUDGE__SANDBOX_WORKER_POOL_SIZE` | ≥ concurrency × parallelism |

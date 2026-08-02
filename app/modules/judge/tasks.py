@@ -1,4 +1,4 @@
-"""Judge Celery tasks — 经 Celery/RabbitMQ 收任务，结果写入 Redis backend，可跨进程 AsyncResult 查询。"""
+"""Judge Celery tasks — 经 Celery/Redis broker 收任务；返回值经 link 回 API，也可写入 result backend。"""
 
 import logging
 
@@ -23,7 +23,7 @@ def _failed_result(submission_id: str, error: str) -> dict:
 
 @celery_app.task(bind=True, base=BaseTask, name="judge.execute")
 def execute_judge(self, payload: dict) -> dict:
-    """同步判题。入站 RabbitMQ；出站 Redis result backend（可跨进程按 task_id 查询）。"""
+    """同步判题。入站 Redis broker（queue=judge）；返回值供 Celery link / result backend。"""
     submission_id = "?"
     if isinstance(payload, dict):
         submission_id = str(payload.get("submission_id") or "?")

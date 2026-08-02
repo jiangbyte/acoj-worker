@@ -1,4 +1,4 @@
-"""判题测试工具 — 经 Celery/RabbitMQ 发送，经 Redis result backend AsyncResult.get() 取回结果。"""
+"""判题测试工具 — 经 Celery/Redis broker 发送，经 Redis result backend AsyncResult.get() 取回结果。"""
 
 import json
 import os

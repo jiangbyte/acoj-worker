@@ -8,7 +8,7 @@
     python tests/test_all_judge_modes.py spj          # SPJ 分组
     python tests/test_all_judge_modes.py interactive  # INTERACTIVE 分组
 
-依赖：Celery worker 必须已启动并连接 RabbitMQ。
+依赖：Celery worker 必须已启动并连接 Redis broker。
 """
 
 import json

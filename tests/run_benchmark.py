@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Worker 性能基准测试：测量吞吐、延迟、混合负载。
 
-使用 Celery task judge.execute，针对真实 RabbitMQ + Celery worker 运行。
+使用 Celery task judge.execute，针对真实 Redis broker + Celery worker 运行。
 
 运行要求：
-  - Celery worker + RabbitMQ 必须运行
+  - Celery worker + Redis broker 必须运行
   - acoj-sandbox Python 包已安装
   - 当前目录是 acoj-worker 项目根
 

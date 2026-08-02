@@ -146,7 +146,9 @@ class StandardMode(BaseJudgeMode):
                 "memory_kb": run_memory_kb,
                 "compile_time_ms": compile_time_ms,
                 "compile_memory_kb": compile_memory_kb,
-                "compile_output": batch_result.compile.message or batch_result.message,
+                "compile_output": batch_result.message
+                or batch_result.compile.message
+                or "",
                 "compile_error": has_ce,
                 "cases": case_results,
                 "error": None,

@@ -19,7 +19,13 @@ celery_app.conf.worker_cancel_long_running_tasks_on_connection_loss = (
     settings.celery.worker_cancel_long_running_tasks_on_connection_loss
 )
 celery_app.conf.worker_prefetch_multiplier = settings.celery.worker_prefetch_multiplier
+celery_app.conf.broker_transport_options = {
+    "visibility_timeout": settings.celery.broker_visibility_timeout,
+}
+celery_app.conf.broker_connection_retry_on_startup = True
+celery_app.conf.task_compression = "gzip"
 celery_app.conf.redbeat_redis_url = settings.redis.url
+celery_app.conf.redbeat_redis_options = {"decode_responses": True}
 celery_app.conf.redbeat_lock_key = "redbeat:lock"
 
 from app.platform.tasks.redbeat_scheduler import sync_to_redbeat  # noqa: E402

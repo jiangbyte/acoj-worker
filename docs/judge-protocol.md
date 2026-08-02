@@ -10,7 +10,7 @@
 | Queue | `judge`（`JUDGE__TASK_DEFAULT_QUEUE` / `CELERY__WORKER_QUEUES`） |
 | 入参 | `JudgePayload` |
 | 返回 | `JudgeResultOut` |
-| Broker | `CELERY__BROKER_URL`（RabbitMQ） |
+| Broker | `CELERY__BROKER_URL`（Redis，建议独立 DB） |
 | Result | 默认 `REDIS__URL`；可用 `CELERY__RESULT_BACKEND` |
 
 ```python

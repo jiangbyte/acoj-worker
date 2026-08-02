@@ -5,7 +5,7 @@ set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
 
-VERSION="${VERSION:-0.1.6}"
+VERSION="${VERSION:-0.1.7}"
 IMAGE="${IMAGE:-registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:${VERSION}}"
 NAME="${NAME:-acoj-worker-demo}"
 MEMORY="${MEMORY:-768m}"

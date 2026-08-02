@@ -144,7 +144,7 @@ def test_c26_worker_restart_recovery():
         except Exception:
             pass
 
-    # 高负载后允许少量丢包（RabbitMQ 瞬时断开等情况）
+    # 高负载后允许少量丢包（broker 瞬时断开等情况）
     threshold = 18
     ok = ac_count >= threshold
     report(f"C26 worker alive: {ac_count}/20 AC (threshold {threshold})", ok)
