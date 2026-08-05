@@ -1,16 +1,19 @@
-# Demo 部署（172.24.149.177，基础设施端口 = 常规 +1，机器 2C/2G）
+# 判题 Worker Demo
 
-运行时：Redis（缓存 + Celery broker）；FILE 测例：MinIO。
+单机启动判题 worker：依赖本机 Redis（缓存 + Celery broker）；FILE 测例另需 MinIO。
 
-## 镜像
+## 准备
 
-```text
-registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.7
+1. 构建或准备好 `acoj-worker` 镜像（见仓库根 README）。
+2. 配置本目录 `.env`（端口、Redis、MinIO、`STORAGE__*`、concurrency 等）。
+3. 可选：通过环境变量覆盖镜像标签：
+
+```bash
+export IMAGE=acoj-worker:local
+export VERSION=local
 ```
 
-`VERSION=x.y.z ./run.sh`（默认 `0.1.7`）。
-
-## 端口
+## 端口（示例）
 
 | 服务 | 端口 |
 |------|------|
@@ -24,29 +27,10 @@ registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.7
 ```bash
 cd deploy/worker
 chmod +x run.sh
-./run.sh pull
-./run.sh
+IMAGE=acoj-worker:local ./run.sh
 ```
 
-```bash
-docker pull registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.7
-docker rm -f acoj-worker-demo 2>/dev/null || true
-docker run -d \
-  --name acoj-worker-demo \
-  --restart unless-stopped \
-  --network host \
-  --privileged \
-  --cgroupns=host \
-  --memory=768m \
-  --memory-swap=768m \
-  --cpus=1.0 \
-  --env-file .env \
-  -e ACOJ_SANDBOX_BINARY=/usr/local/bin/acosandbox \
-  -e ACOJ_CELERY_NODENAME=judge@acoj-worker-demo \
-  -e ID_GENERATOR__WORKER_ID=1 \
-  registry.cn-beijing.aliyuncs.com/czbyte/acoj-worker:0.1.7 \
-  worker
-```
+`run.sh` 会以 `--network host --privileged --cgroupns=host` 运行容器，并限制 memory / cpus（可用 `MEMORY` / `CPUS` 覆盖）。
 
 ## 运维
 
@@ -56,12 +40,11 @@ docker stats acoj-worker-demo
 docker rm -f acoj-worker-demo
 ```
 
-资源示例：`MEMORY=1g CPUS=1.5 ./run.sh`。concurrency 与 CPU 对齐。
+资源示例：`MEMORY=1g CPUS=1.5 IMAGE=acoj-worker:local ./run.sh`。concurrency 与 CPU 对齐。
 
 ## 配置要点
 
-- `--network host` 访问本机 Redis / MinIO。
-- 隔离：namespaces、cgroup、`/opt/acoj-rootfs`（usr-merge + `/usr` `/etc` `/proc`）。
-- `STORAGE__*`、`CELERY__WORKER_CONCURRENCY=2`、sandbox 池 `4` 见 `.env`。
-- `CELERY__WORKER_QUEUES=judge`（勿加 `default`/`acoj_api`）。
-- FILE：MinIO bucket `acoj`；inline 测例可只用 Redis。
+- `--network host` 便于访问本机 Redis / MinIO。
+- 隔离：namespaces、cgroup、`/opt/acoj-rootfs`。
+- `CELERY__WORKER_QUEUES=judge`（不要加入 `default` / `acoj_api`）。
+- FILE：配置 `STORAGE__*` 与 bucket；仅 inline 测例时可只依赖 Redis。
